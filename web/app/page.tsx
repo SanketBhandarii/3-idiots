@@ -6,9 +6,6 @@ import { motion } from "motion/react";
 import {
   ArrowRight,
   Play,
-  Lightning,
-  EnvelopeSimple,
-  Circle,
   Graph,
   Robot,
   Article,
@@ -18,7 +15,6 @@ import {
   Warning,
   Globe,
   Sparkle,
-  CursorClick,
 } from "@phosphor-icons/react";
 import { useAuthStore } from "@/stores/auth";
 import { toast } from "@/lib/toast";
@@ -45,8 +41,6 @@ interface GraphNode {
   color: string;
   bg: string;
   delay: number;
-  details: string;
-  source: string;
 }
 
 interface GraphEdge {
@@ -62,8 +56,8 @@ interface GraphEdge {
 const TABS: WebTab[] = [
   {
     id: "tab-arxiv",
-    x: 10,
-    y: 12,
+    x: 15,
+    y: 8,
     url: "arxiv.org/abs/2401.0945",
     title: "Med-PaLM 2 Clinical Benchmarks",
     badge: "Tab Synced",
@@ -72,8 +66,8 @@ const TABS: WebTab[] = [
   },
   {
     id: "tab-fda",
-    x: 310,
-    y: 12,
+    x: 285,
+    y: 8,
     url: "fda.gov/medical-devices/samd",
     title: "FDA SaMD 2026 AI Guidelines",
     badge: "Tab Synced",
@@ -86,94 +80,78 @@ const NODES: GraphNode[] = [
   {
     id: "n1",
     x: 40,
-    y: 110,
+    y: 95,
     label: "Med-PaLM 2",
     icon: "article",
     color: "#a86f00",
     bg: "#fef3d6",
     delay: 0.2,
-    source: "arxiv.org/abs/2401.0945",
-    details: "Claims 92.6% diagnostic accuracy on clinical USMLE benchmarks.",
   },
   {
     id: "n2",
-    x: 210,
-    y: 95,
+    x: 195,
+    y: 80,
     label: "Clinical NLP",
     icon: "brain",
     color: "#5a3dd4",
     bg: "#ece5fe",
     delay: 0.4,
-    source: "Automated synthesis",
-    details: "Semantic embeddings extracted across 14 medical knowledge papers.",
   },
   {
     id: "n5",
-    x: 360,
-    y: 110,
+    x: 345,
+    y: 95,
     label: "FDA SaMD 2026",
     icon: "tree",
     color: "#7b5cf0",
     bg: "#ece5fe",
     delay: 0.6,
-    source: "fda.gov/medical-devices/samd",
-    details: "Software as a Medical Device compliance checklist & risk tiers.",
   },
   {
     id: "n3",
-    x: 175,
-    y: 185,
+    x: 170,
+    y: 165,
     label: "RAG for EHR",
     icon: "file",
     color: "#3f8a2e",
     bg: "#e8f4dc",
     delay: 0.8,
-    source: "nature.com/articles/s415",
-    details: "Retrieval-augmented patient timeline synthesis with citation anchor.",
   },
   {
     id: "n4",
-    x: 15,
-    y: 220,
+    x: 10,
+    y: 200,
     label: "Hallucination Risk",
     icon: "warning",
     color: "#c4502f",
     bg: "#fde3d9",
     delay: 1.0,
-    source: "BMJ Clinical Safety 2025",
-    details: "FLAGGED: 8.4% false-positive contraindication rate found in trial.",
   },
   {
     id: "n6",
-    x: 150,
-    y: 275,
+    x: 145,
+    y: 250,
     label: "Vector DBs",
     icon: "brain",
     color: "#a86f00",
     bg: "#fef3d6",
     delay: 1.2,
-    source: "Workspace Index",
-    details: "HNSW index storing cross-page semantic vectors & evidence chunks.",
   },
   {
     id: "n7",
-    x: 350,
-    y: 225,
+    x: 335,
+    y: 205,
     label: "LLM Regulation",
     icon: "file",
     color: "#c9544f",
     bg: "#fde4e2",
     delay: 1.4,
-    source: "EU AI Act Annex IV",
-    details: "Mandatory human-in-the-loop requirement for diagnostic triggers.",
   },
 ];
 
 const EDGES: GraphEdge[] = [
-  // Tab to node connections (webpage -> node)
   { id: "e-tab1", from: "tab-arxiv", to: "n1", isTabBeam: true, label: "extracted", delay: 0.3 },
   { id: "e-tab2", from: "tab-fda", to: "n5", isTabBeam: true, label: "extracted", delay: 0.7 },
-  // Node to node connections
   { id: "e1", from: "n1", to: "n2", label: "cites", delay: 0.5 },
   { id: "e-conflict", from: "n1", to: "n4", isConflict: true, label: "⚠️ Contradiction", delay: 1.1 },
   { id: "e2", from: "n2", to: "n3", label: "synthesizes", delay: 0.9 },
@@ -194,11 +172,10 @@ function NodeIcon({ type, size = 14 }: { type: GraphNode["icon"]; size?: number 
   }
 }
 
-/* ─── Animated Rich Graph Hero Component ─── */
+/* ─── Animated Free-Floating Connection Graph (No Outer Box) ─── */
 
-function AnimatedRichGraph() {
+function AnimatedFreeGraph() {
   const [visible, setVisible] = useState(false);
-  const [selectedNode, setSelectedNode] = useState<GraphNode | null>(NODES[0]);
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -210,7 +187,7 @@ function AnimatedRichGraph() {
   const getCenter = (id: string): { x: number; y: number } => {
     const tab = TABS.find((t) => t.id === id);
     if (tab) {
-      return { x: tab.x + 95, y: tab.y + 40 };
+      return { x: tab.x + 95, y: tab.y + 36 };
     }
     const node = NODES.find((n) => n.id === id);
     if (node) {
@@ -222,18 +199,9 @@ function AnimatedRichGraph() {
   return (
     <div
       ref={containerRef}
-      className="relative h-[385px] w-[530px] rounded-3xl border border-[#e8e2d6] bg-white/70 backdrop-blur-md p-3 shadow-[0_20px_60px_-15px_rgba(28,27,43,0.12)] select-none overflow-hidden"
+      className="relative h-[340px] w-[500px] select-none"
       style={{ opacity: visible ? 1 : 0, transition: "opacity 0.6s ease" }}
     >
-      {/* Decorative subtle grid background */}
-      <div
-        className="absolute inset-0 pointer-events-none opacity-40"
-        style={{
-          backgroundImage: "radial-gradient(#1c1b2b 0.75px, transparent 0.75px)",
-          backgroundSize: "16px 16px",
-        }}
-      />
-
       {/* SVG Connecting Lines with Traveling Light Packets */}
       <svg className="absolute inset-0 h-full w-full pointer-events-none" style={{ overflow: "visible" }}>
         <defs>
@@ -260,7 +228,7 @@ function AnimatedRichGraph() {
 
           return (
             <g key={e.id}>
-              {/* The edge line */}
+              {/* Edge line */}
               <path
                 id={`path-${e.id}`}
                 d={pathD}
@@ -268,10 +236,10 @@ function AnimatedRichGraph() {
                 stroke={isConflict ? "url(#edge-conflict)" : isTab ? "url(#edge-tab)" : "url(#edge-default)"}
                 strokeWidth={isConflict ? 2.5 : isTab ? 2 : 1.75}
                 strokeDasharray={isConflict ? "5,4" : isTab ? "4,4" : undefined}
-                strokeOpacity={isConflict ? 0.9 : 0.6}
+                strokeOpacity={isConflict ? 0.9 : 0.65}
               />
 
-              {/* Traveling light particle along the path */}
+              {/* Traveling light particle */}
               {visible && (
                 <circle
                   r={isConflict ? 3.5 : 3}
@@ -290,15 +258,15 @@ function AnimatedRichGraph() {
         })}
       </svg>
 
-      {/* Floating Web Page Tabs (Top of Graph) */}
+      {/* Floating Web Page Tabs */}
       {TABS.map((tab) => (
         <div
           key={tab.id}
-          className="absolute flex items-center gap-2 rounded-xl border border-[#e8e2d6] bg-white px-2.5 py-1.5 shadow-sm transition hover:shadow hover:border-[#1c1b2b]/30 cursor-pointer"
+          className="absolute flex items-center gap-2 rounded-xl border border-[#e8e2d6] bg-white px-2.5 py-1.5 shadow-sm transition hover:shadow cursor-default"
           style={{
             left: tab.x,
             top: tab.y,
-            width: "205px",
+            width: "200px",
             animation: visible ? "pop-node 0.5s ease forwards" : "none",
           }}
         >
@@ -344,9 +312,8 @@ function AnimatedRichGraph() {
         );
       })}
 
-      {/* Nodes */}
+      {/* Floating Nodes */}
       {NODES.map((n) => {
-        const isSelected = selectedNode?.id === n.id;
         const isConflict = n.id === "n4";
 
         return (
@@ -355,11 +322,8 @@ function AnimatedRichGraph() {
             drag
             dragConstraints={containerRef}
             dragElastic={0.15}
-            onClick={() => setSelectedNode(n)}
             className={`absolute flex items-center gap-1.5 rounded-xl border bg-white px-2.5 py-1.5 shadow-sm cursor-grab active:cursor-grabbing transition-all select-none ${
-              isSelected
-                ? "border-[#7b5cf0] ring-2 ring-[#7b5cf0]/30 shadow-md scale-105 z-20"
-                : isConflict
+              isConflict
                 ? "border-[#f08a6c] hover:border-[#c4502f] z-10"
                 : "border-[#e8e2d6] hover:border-[#1c1b2b]/40 z-10"
             }`}
@@ -384,60 +348,20 @@ function AnimatedRichGraph() {
         );
       })}
 
-      {/* Interactive Detail Drawer/HUD (Bottom of graph) */}
+      {/* Subtle Floating Agent Pill */}
       <div
-        className="absolute bottom-2 left-2 right-2 flex items-center justify-between rounded-xl border border-[#e8e2d6] bg-white/95 px-3 py-2 shadow-sm z-30"
+        className="absolute bottom-1 left-4 flex items-center gap-1.5 rounded-full border border-[#7b5cf0]/30 bg-white/90 backdrop-blur-xs px-2.5 py-1 shadow-xs"
         style={{
           opacity: 0,
           animation: visible ? "pop-node 0.5s ease forwards 1.6s" : "none",
         }}
       >
-        {selectedNode ? (
-          <div className="flex items-center justify-between w-full gap-2">
-            <div className="min-w-0 flex items-center gap-2">
-              <span
-                className="grid h-5 w-5 shrink-0 place-items-center rounded-md"
-                style={{ backgroundColor: selectedNode.bg, color: selectedNode.color }}
-              >
-                <NodeIcon type={selectedNode.icon} size={11} />
-              </span>
-              <div className="min-w-0">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[11px] font-black text-[#1c1b2b]">{selectedNode.label}</span>
-                  <span className="text-[9px] font-mono text-[#9794ab] truncate max-w-[130px]">
-                    · {selectedNode.source}
-                  </span>
-                </div>
-                <p className="text-[9px] text-[#625f78] truncate max-w-[280px] font-medium">
-                  {selectedNode.details}
-                </p>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-1.5 shrink-0">
-              <span className="inline-flex items-center gap-1 rounded-full bg-[#ece5fe] px-2 py-0.5 text-[9px] font-bold text-[#5a3dd4]">
-                <Robot size={11} weight="fill" /> Agent Synced
-              </span>
-            </div>
-          </div>
-        ) : (
-          <div className="flex items-center justify-between w-full text-[10px] font-semibold text-[#625f78]">
-            <span className="flex items-center gap-1.5 text-[#23864b]">
-              <span className="h-2 w-2 rounded-full bg-[#23864b] animate-ping" />
-              2 Tabs Captured
-            </span>
-            <span className="flex items-center gap-1 text-[#c4502f] font-bold">
-              <Warning size={12} weight="fill" /> 1 Contradiction Detected
-            </span>
-            <span className="text-[#9794ab] flex items-center gap-1">
-              <CursorClick size={12} /> Click node to inspect
-            </span>
-          </div>
-        )}
+        <Robot size={12} weight="fill" className="text-[#5a3dd4] animate-bounce" />
+        <span className="text-[9px] font-bold text-[#5a3dd4]">Agent 3 synthesizing connections…</span>
       </div>
 
-      {/* Floating ZAP / Conflict Radar Starburst Badge */}
-      <div className="absolute right-3 top-3 z-30 pointer-events-none">
+      {/* Floating Conflict Radar pill */}
+      <div className="absolute right-4 top-1 z-30 pointer-events-none">
         <span className="inline-flex items-center gap-1 rounded-full border border-[#f08a6c]/40 bg-[#fde3d9] px-2 py-0.5 text-[9px] font-black text-[#c4502f] shadow-xs">
           <Sparkle size={10} weight="fill" className="text-[#f08a6c] animate-spin" />
           Conflict Radar Active
@@ -480,7 +404,7 @@ export default function LandingPage() {
   return (
     <div className="min-h-screen bg-[#faf8f4] text-[#1c1b2b] selection:bg-[#fad47f] selection:text-[#1c1b2b] overflow-x-hidden font-sans">
 
-      {/* CSS keyframes for graph animations */}
+      {/* CSS keyframes for animations */}
       <style>{`
         @keyframes pop-node {
           to { opacity: 1; transform: scale(1) translateY(0); }
@@ -530,20 +454,13 @@ export default function LandingPage() {
         </div>
       </nav>
 
-      {/* ─── Hero (Shifted & Centered Composition) ─── */}
-      <section className="relative z-10 mx-auto max-w-7xl px-6 pt-4 pb-16 sm:px-8 lg:pt-8 lg:pb-20">
+      {/* ─── Hero ─── */}
+      <section className="relative z-10 mx-auto max-w-7xl px-6 pt-6 pb-16 sm:px-8 lg:pt-10 lg:pb-20">
         <div className="flex flex-col lg:flex-row items-center justify-start lg:gap-8 xl:gap-14">
 
-          {/* Left: Headline & CTAs */}
-          <div className="max-w-xl shrink-0 space-y-5">
-            {/* NEW pill */}
-            <div className="inline-flex items-center gap-2.5 rounded-full border-2 border-[#1c1b2b] bg-white px-3 py-1.5">
-              <span className="rounded-full bg-[#f08a6c] px-2 py-0.5 text-[10px] font-black uppercase tracking-wider text-white">NEW</span>
-              <span className="text-xs font-semibold text-[#1c1b2b]">AI Research Agent, watch connections appear live</span>
-            </div>
-
-            {/* Headline */}
-            <h1 className="font-display text-[44px] sm:text-[56px] lg:text-[62px] font-black leading-[1.04] tracking-tight text-[#1c1b2b]">
+          {/* Left: Clean Headline & CTAs (No distracting top/bottom pill rows) */}
+          <div className="max-w-xl shrink-0 space-y-6">
+            <h1 className="font-display text-[46px] sm:text-[58px] lg:text-[64px] font-black leading-[1.04] tracking-tight text-[#1c1b2b]">
               Plan your<br />
               own research.<br />
               <span className="text-[#1c1b2b]">We handle</span><br />
@@ -554,7 +471,7 @@ export default function LandingPage() {
             </h1>
 
             {/* CTAs */}
-            <div className="flex items-center gap-3 pt-1">
+            <div className="flex items-center gap-3 pt-2">
               <button
                 onClick={handleDemoLogin}
                 disabled={demoLoading}
@@ -569,22 +486,15 @@ export default function LandingPage() {
                 <Play size={14} weight="fill" /> Explore demo
               </Link>
             </div>
-
-            {/* Benefits */}
-            <div className="flex items-center gap-6 pt-1 text-[13px] font-semibold text-[#3a3850]">
-              <span className="flex items-center gap-1.5"><Lightning size={14} weight="fill" className="text-[#fad47f]" /> Tabs to nodes in seconds</span>
-              <span className="flex items-center gap-1.5"><EnvelopeSimple size={14} weight="bold" className="text-[#23864b]" /> Instant session report</span>
-              <span className="flex items-center gap-1.5"><Circle size={8} weight="fill" className="text-[#7b5cf0]" /> Conflict radar</span>
-            </div>
           </div>
 
-          {/* Right: Rich Animated Connection Graph (Shifted left towards the text) */}
+          {/* Right: Free-floating Connection Graph (NO box container, directly in the open space) */}
           <div className="hidden lg:flex items-center justify-center relative lg:-ml-2 xl:-ml-6 shrink-0">
-            {/* Decorative background blobs */}
+            {/* Soft decorative background shapes */}
             <div className="absolute -top-10 -left-12 h-52 w-44 rounded-[50px] bg-[#c6b5f6]/30 -rotate-12 -z-10 pointer-events-none" />
             <div className="absolute -bottom-8 right-4 h-40 w-40 rounded-full bg-[#d0e8ba]/40 -z-10 pointer-events-none" />
 
-            <AnimatedRichGraph />
+            <AnimatedFreeGraph />
           </div>
 
         </div>

@@ -244,9 +244,18 @@ export default function LandingPage() {
                 </span>
               </div>
 
-              {/* ── Mini Connection Graph ── */}
-              <div className="relative h-[72px] w-full rounded-xl bg-[#f5f1e8]/60 border border-[#e8e2d6] mb-2 overflow-hidden">
-                <svg className="absolute inset-0 h-full w-full" viewBox="0 0 340 72">
+              {/* ── Mini Connection Graph: Real-time Web Page Travel ── */}
+              <div className="relative h-[82px] w-full rounded-2xl bg-[#faf8f4] border border-[#e8e2d6] mb-2.5 overflow-hidden shadow-inner">
+                {/* Subtle header badge */}
+                <div className="absolute top-1.5 left-2.5 z-10 flex items-center gap-1.5">
+                  <span className="relative flex h-2 w-2">
+                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-[#7b5cf0] opacity-75"></span>
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-[#7b5cf0]"></span>
+                  </span>
+                  <span className="text-[9px] font-black uppercase tracking-wider text-[#7b5cf0]">Web Page Flow</span>
+                </div>
+
+                <svg className="absolute inset-0 h-full w-full" viewBox="0 0 340 82">
                   <defs>
                     <linearGradient id="mini-grad" x1="0%" y1="0%" x2="100%" y2="0%">
                       <stop offset="0%" stopColor="#c6b5f6" />
@@ -256,61 +265,112 @@ export default function LandingPage() {
                       <stop offset="0%" stopColor="#f08a6c" />
                       <stop offset="100%" stopColor="#c4502f" />
                     </linearGradient>
+                    <filter id="card-shadow" x="-20%" y="-20%" width="140%" height="140%">
+                      <feDropShadow dx="0" dy="1" stdDeviation="1" floodColor="#1c1b2b" floodOpacity="0.18" />
+                    </filter>
                   </defs>
-                  {/* Connection lines */}
-                  <path d="M 55 28 L 140 22" stroke="url(#mini-grad)" strokeWidth="1.5" fill="none" strokeOpacity="0.7" />
-                  <path d="M 140 22 L 240 20" stroke="url(#mini-grad)" strokeWidth="1.5" fill="none" strokeOpacity="0.7" />
-                  <path d="M 140 22 L 170 52" stroke="url(#mini-grad)" strokeWidth="1.5" fill="none" strokeOpacity="0.5" />
-                  <path d="M 55 28 L 90 55" stroke="url(#mini-conflict)" strokeWidth="1.5" fill="none" strokeDasharray="4,3" strokeOpacity="0.8" />
-                  <path d="M 240 20 L 285 48" stroke="url(#mini-grad)" strokeWidth="1.5" fill="none" strokeOpacity="0.5" />
-                  <path d="M 170 52 L 285 48" stroke="url(#mini-grad)" strokeWidth="1.5" fill="none" strokeOpacity="0.4" />
 
-                  {/* Traveling light dots */}
-                  <circle r="2.5" fill="#7b5cf0">
-                    <animateMotion dur="2.5s" repeatCount="indefinite" path="M 55 28 L 140 22" begin="0s" />
-                  </circle>
-                  <circle r="2.5" fill="#7b5cf0">
-                    <animateMotion dur="3s" repeatCount="indefinite" path="M 140 22 L 240 20" begin="0.4s" />
-                  </circle>
-                  <circle r="2" fill="#c4502f">
-                    <animateMotion dur="2s" repeatCount="indefinite" path="M 55 28 L 90 55" begin="0.8s" />
-                  </circle>
-                  <circle r="2.5" fill="#7b5cf0">
-                    <animateMotion dur="2.8s" repeatCount="indefinite" path="M 140 22 L 170 52" begin="1.2s" />
-                  </circle>
-                  <circle r="2" fill="#5a3dd4">
-                    <animateMotion dur="3.2s" repeatCount="indefinite" path="M 240 20 L 285 48" begin="0.6s" />
-                  </circle>
+                  {/* Connection paths */}
+                  <path id="path-1-2" d="M 52 36 L 140 26" stroke="url(#mini-grad)" strokeWidth="1.5" fill="none" strokeOpacity="0.75" />
+                  <path id="path-2-3" d="M 140 26 L 235 24" stroke="url(#mini-grad)" strokeWidth="1.5" fill="none" strokeOpacity="0.75" />
+                  <path id="path-2-5" d="M 140 26 L 175 60" stroke="url(#mini-grad)" strokeWidth="1.5" fill="none" strokeOpacity="0.6" />
+                  <path id="path-1-4" d="M 52 36 L 92 62" stroke="url(#mini-conflict)" strokeWidth="1.5" fill="none" strokeDasharray="4,3" strokeOpacity="0.85" />
+                  <path id="path-3-6" d="M 235 24 L 285 54" stroke="url(#mini-grad)" strokeWidth="1.5" fill="none" strokeOpacity="0.6" />
+                  <path id="path-5-6" d="M 175 60 L 285 54" stroke="url(#mini-grad)" strokeWidth="1.5" fill="none" strokeOpacity="0.5" />
 
-                  {/* Node circles with labels */}
-                  {/* Node 1: Med-PaLM */}
-                  <circle cx="55" cy="28" r="10" fill="#fef3d6" stroke="#a86f00" strokeWidth="1.5" />
-                  <text x="55" y="31" textAnchor="middle" fill="#a86f00" fontSize="7" fontWeight="800">M</text>
+                  {/* ── Traveling Web Page 1 (Node 1 -> Node 2) ── */}
+                  <g filter="url(#card-shadow)">
+                    <animateMotion dur="2.4s" repeatCount="indefinite" path="M 52 36 L 140 26" begin="0s" keyPoints="0;1" keyTimes="0;1" />
+                    <rect x="-7" y="-5" width="14" height="10" rx="2" fill="#ffffff" stroke="#7b5cf0" strokeWidth="1" />
+                    <rect x="-7" y="-5" width="14" height="3" rx="1" fill="#ece5fe" />
+                    <line x1="-4" y1="1" x2="3" y2="1" stroke="#9794ab" strokeWidth="0.8" strokeLinecap="round" />
+                    <line x1="-4" y1="3" x2="0" y2="3" stroke="#9794ab" strokeWidth="0.8" strokeLinecap="round" />
+                  </g>
 
-                  {/* Node 2: Clinical NLP */}
-                  <circle cx="140" cy="22" r="10" fill="#ece5fe" stroke="#5a3dd4" strokeWidth="1.5" />
-                  <text x="140" y="25" textAnchor="middle" fill="#5a3dd4" fontSize="7" fontWeight="800">C</text>
+                  {/* ── Traveling Web Page 2 (Node 2 -> Node 3) ── */}
+                  <g filter="url(#card-shadow)">
+                    <animateMotion dur="2.8s" repeatCount="indefinite" path="M 140 26 L 235 24" begin="0.8s" keyPoints="0;1" keyTimes="0;1" />
+                    <rect x="-7" y="-5" width="14" height="10" rx="2" fill="#ffffff" stroke="#7b5cf0" strokeWidth="1" />
+                    <rect x="-7" y="-5" width="14" height="3" rx="1" fill="#ece5fe" />
+                    <line x1="-4" y1="1" x2="4" y2="1" stroke="#9794ab" strokeWidth="0.8" strokeLinecap="round" />
+                    <line x1="-4" y1="3" x2="1" y2="3" stroke="#9794ab" strokeWidth="0.8" strokeLinecap="round" />
+                  </g>
+
+                  {/* ── Traveling Web Page 3 (Node 2 -> Node 5: Clinical -> RAG) ── */}
+                  <g filter="url(#card-shadow)">
+                    <animateMotion dur="2.6s" repeatCount="indefinite" path="M 140 26 L 175 60" begin="1.4s" keyPoints="0;1" keyTimes="0;1" />
+                    <rect x="-7" y="-5" width="14" height="10" rx="2" fill="#ffffff" stroke="#3f8a2e" strokeWidth="1" />
+                    <rect x="-7" y="-5" width="14" height="3" rx="1" fill="#e8f4dc" />
+                    <line x1="-4" y1="1" x2="2" y2="1" stroke="#3f8a2e" strokeWidth="0.8" strokeLinecap="round" />
+                    <line x1="-4" y1="3" x2="-1" y2="3" stroke="#3f8a2e" strokeWidth="0.8" strokeLinecap="round" />
+                  </g>
+
+                  {/* ── Traveling Web Page 4 (Conflict Paper: Node 1 -> Node 4) ── */}
+                  <g filter="url(#card-shadow)">
+                    <animateMotion dur="2.2s" repeatCount="indefinite" path="M 52 36 L 92 62" begin="0.4s" keyPoints="0;1" keyTimes="0;1" />
+                    <rect x="-7" y="-5" width="14" height="10" rx="2" fill="#ffffff" stroke="#c4502f" strokeWidth="1" />
+                    <rect x="-7" y="-5" width="14" height="3" rx="1" fill="#fde3d9" />
+                    <line x1="-4" y1="1" x2="3" y2="1" stroke="#c4502f" strokeWidth="0.8" strokeLinecap="round" />
+                    <line x1="-4" y1="3" x2="0" y2="3" stroke="#c4502f" strokeWidth="0.8" strokeLinecap="round" />
+                  </g>
+
+                  {/* ── Traveling Web Page 5 (Node 3 -> Node 6: FDA -> Synthesis) ── */}
+                  <g filter="url(#card-shadow)">
+                    <animateMotion dur="2.7s" repeatCount="indefinite" path="M 235 24 L 285 54" begin="1.1s" keyPoints="0;1" keyTimes="0;1" />
+                    <rect x="-7" y="-5" width="14" height="10" rx="2" fill="#ffffff" stroke="#7b5cf0" strokeWidth="1" />
+                    <rect x="-7" y="-5" width="14" height="3" rx="1" fill="#ece5fe" />
+                    <line x1="-4" y1="1" x2="3" y2="1" stroke="#9794ab" strokeWidth="0.8" strokeLinecap="round" />
+                    <line x1="-4" y1="3" x2="-1" y2="3" stroke="#9794ab" strokeWidth="0.8" strokeLinecap="round" />
+                  </g>
+
+                  {/* ── Research Source Nodes (Web Page Sources) ── */}
+                  {/* Node 1: PubMed / Med-PaLM */}
+                  <g>
+                    <circle cx="52" cy="36" r="12" fill="#fef3d6" stroke="#a86f00" strokeWidth="1.5" />
+                    <text x="52" y="39.5" textAnchor="middle" fill="#a86f00" fontSize="7.5" fontWeight="900">PUB</text>
+                    <text x="52" y="54" textAnchor="middle" fill="#9794ab" fontSize="6.5" fontWeight="700">PubMed</text>
+                  </g>
+
+                  {/* Node 2: Clinical Trial */}
+                  <g>
+                    <circle cx="140" cy="26" r="12" fill="#ece5fe" stroke="#5a3dd4" strokeWidth="1.5" />
+                    <text x="140" y="29.5" textAnchor="middle" fill="#5a3dd4" fontSize="7.5" fontWeight="900">NLP</text>
+                    <text x="140" y="44" textAnchor="middle" fill="#9794ab" fontSize="6.5" fontWeight="700">arXiv</text>
+                  </g>
 
                   {/* Node 3: FDA SaMD */}
-                  <circle cx="240" cy="20" r="10" fill="#ece5fe" stroke="#7b5cf0" strokeWidth="1.5" />
-                  <text x="240" y="23" textAnchor="middle" fill="#7b5cf0" fontSize="7" fontWeight="800">F</text>
+                  <g>
+                    <circle cx="235" cy="24" r="12" fill="#ece5fe" stroke="#7b5cf0" strokeWidth="1.5" />
+                    <text x="235" y="27.5" textAnchor="middle" fill="#7b5cf0" fontSize="7.5" fontWeight="900">FDA</text>
+                    <text x="235" y="42" textAnchor="middle" fill="#9794ab" fontSize="6.5" fontWeight="700">Gov SaMD</text>
+                  </g>
 
-                  {/* Node 4: Hallucination (conflict) */}
-                  <circle cx="90" cy="55" r="10" fill="#fde3d9" stroke="#c4502f" strokeWidth="1.5" strokeDasharray="3,2" />
-                  <text x="90" y="58" textAnchor="middle" fill="#c4502f" fontSize="7" fontWeight="800">⚠</text>
+                  {/* Node 4: Hallucination Risk Paper */}
+                  <g>
+                    <circle cx="92" cy="62" r="11" fill="#fde3d9" stroke="#c4502f" strokeWidth="1.5" strokeDasharray="3,2" />
+                    <text x="92" y="65.5" textAnchor="middle" fill="#c4502f" fontSize="8" fontWeight="900">⚠</text>
+                    <text x="92" y="77" textAnchor="middle" fill="#c4502f" fontSize="6" fontWeight="700">Conflict</text>
+                  </g>
 
-                  {/* Node 5: RAG */}
-                  <circle cx="170" cy="52" r="10" fill="#e8f4dc" stroke="#3f8a2e" strokeWidth="1.5" />
-                  <text x="170" y="55" textAnchor="middle" fill="#3f8a2e" fontSize="7" fontWeight="800">R</text>
+                  {/* Node 5: EHR / RAG */}
+                  <g>
+                    <circle cx="175" cy="60" r="11" fill="#e8f4dc" stroke="#3f8a2e" strokeWidth="1.5" />
+                    <text x="175" y="63.5" textAnchor="middle" fill="#3f8a2e" fontSize="7.5" fontWeight="900">EHR</text>
+                    <text x="175" y="75" textAnchor="middle" fill="#3f8a2e" fontSize="6" fontWeight="700">Hospital</text>
+                  </g>
 
-                  {/* Node 6: Regulation */}
-                  <circle cx="285" cy="48" r="10" fill="#fde4e2" stroke="#c9544f" strokeWidth="1.5" />
-                  <text x="285" y="51" textAnchor="middle" fill="#c9544f" fontSize="7" fontWeight="800">L</text>
+                  {/* Node 6: Synthesis Report */}
+                  <g>
+                    <circle cx="285" cy="54" r="12" fill="#fad47f" stroke="#1c1b2b" strokeWidth="1.5" />
+                    <text x="285" y="57.5" textAnchor="middle" fill="#1c1b2b" fontSize="7.5" fontWeight="900">MAP</text>
+                    <text x="285" y="72" textAnchor="middle" fill="#1c1b2b" fontSize="6.5" fontWeight="700">Synthesis</text>
+                  </g>
                 </svg>
-                {/* Tiny legend */}
-                <div className="absolute bottom-1 right-2 flex items-center gap-2 text-[8px] font-bold text-[#9794ab]">
-                  <span className="flex items-center gap-0.5"><span className="inline-block h-1.5 w-4 rounded-full bg-[#7b5cf0]" />linked</span>
-                  <span className="flex items-center gap-0.5"><span className="inline-block h-1.5 w-4 rounded-full bg-[#c4502f] opacity-70" style={{ backgroundImage: "repeating-linear-gradient(90deg, #c4502f 0 3px, transparent 3px 6px)" }} />conflict</span>
+
+                {/* Tiny bottom-right legend */}
+                <div className="absolute bottom-1 right-2 flex items-center gap-2 text-[8px] font-bold text-[#9794ab] bg-[#faf8f4]/90 px-1.5 py-0.5 rounded">
+                  <span className="flex items-center gap-0.5"><span className="inline-block h-1.5 w-3 rounded-full bg-[#7b5cf0]" />synced</span>
+                  <span className="flex items-center gap-0.5"><span className="inline-block h-1.5 w-3 rounded-full bg-[#c4502f]" />conflict</span>
                 </div>
               </div>
 

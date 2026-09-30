@@ -53,7 +53,6 @@ import { AvatarStack, Chip, Segmented, Tip } from "@/components/ui/primitives";
 import { Menu, MenuContent, MenuItem, MenuLabel, MenuSeparator, MenuTrigger, Pop } from "@/components/ui/overlay";
 import { EmptyState, ErrorState, LoadingBlock } from "@/components/ui/states";
 import { UserMenu } from "@/components/shell/AppHeader";
-import { Logo } from "@/components/shell/Logo";
 import { useGraphStore } from "@/stores/graph";
 import { filtersActive, useUiStore } from "@/stores/ui";
 import { sessionElapsed, useSessionStore } from "@/stores/session";
@@ -279,54 +278,73 @@ function TopBar({ workspaceId, readOnly }: { workspaceId: string; readOnly: bool
   const lastSession = useSessionStore((s) => s.session);
 
   return (
-    <header className="z-30 flex flex-wrap items-center gap-2 border-b border-ink/5 bg-canvas/90 px-3 py-2 backdrop-blur-md sm:px-4">
-      <Link href="/workspaces" aria-label="Back to workspaces" className="grid h-9 w-9 place-items-center rounded-full bg-white shadow-clay-sm hover:-translate-y-0.5">
-        <ArrowLeft size={16} weight="bold" />
-      </Link>
-      <Logo compact className="hidden sm:inline-flex" />
-      <div className="flex min-w-0 max-w-[40vw] flex-1 items-center gap-2 sm:flex-none">
-        <WorkspaceTitle readOnly={readOnly} />
-        {readOnly && <span className="rounded-full bg-sky-soft px-2 py-0.5 text-[10px] font-bold text-sky-deep">View only</span>}
+    <header className="z-30 flex h-14 w-full shrink-0 items-center justify-between border-b border-ink/5 bg-canvas/90 px-3 backdrop-blur-md sm:px-4">
+      {/* Left cluster */}
+      <div className="flex min-w-0 shrink-0 items-center gap-2">
+        <Link href="/workspaces" aria-label="Back to workspaces" className="grid h-9 w-9 shrink-0 place-items-center rounded-full bg-white shadow-clay-sm hover:-translate-y-0.5 transition">
+          <ArrowLeft size={16} weight="bold" />
+        </Link>
+        <div className="flex min-w-0 max-w-[140px] items-center gap-1.5 sm:max-w-[200px] md:max-w-[240px]">
+          <WorkspaceTitle readOnly={readOnly} />
+          {readOnly && <span className="shrink-0 rounded-full bg-sky-soft px-2 py-0.5 text-[10px] font-bold text-sky-deep">View only</span>}
+        </div>
+        <TrackingControl workspaceId={workspaceId} readOnly={readOnly} />
       </div>
-      <TrackingControl workspaceId={workspaceId} readOnly={readOnly} />
-      <button onClick={() => useUiStore.getState().setSearchOpen(true)} className="ml-auto hidden h-9 min-w-44 items-center gap-2 rounded-full bg-white px-3 text-left text-xs font-semibold text-faint shadow-clay-sm md:flex" aria-label="Search (Ctrl+K)">
-        <MagnifyingGlass size={15} weight="bold" /> Search… <kbd className="ml-auto rounded-md bg-canvas px-1.5 py-0.5 text-[10px]">Ctrl K</kbd>
-      </button>
-      <Button size="icon-sm" variant="secondary" className="ml-auto md:hidden" aria-label="Search" onClick={() => useUiStore.getState().setSearchOpen(true)}><MagnifyingGlass size={16} weight="bold" /></Button>
-      <Segmented layoutId="view-pill" size="xs" value={viewMode} onChange={(v) => useUiStore.getState().setViewMode(v)} options={VIEWS.map((v) => ({ ...v, label: v.label }))} className="hidden lg:inline-flex" />
-      <div className="flex items-center gap-1.5">
-        <PanelButton panel="radar" icon={Target} label="Research Radar (R)" count={radar} tone="bg-danger" />
-        <PanelButton panel="conflicts" icon={Sword} label="Conflict Radar (C)" count={conflicts} />
-        <PanelButton panel="memory" icon={Brain} label="Research Memory" />
-        <PanelButton panel="activity" icon={jobsRunning ? Robot : Robot} label="AI activity" />
-        {inbox > 0 && <PanelButton panel="inbox" icon={Tray} label="Inbox (not research)" count={inbox} tone="bg-sky-deep" />}
+
+      {/* Center cluster: view switchers on desktop */}
+      <div className="hidden lg:flex shrink-0 items-center justify-center">
+        <Segmented layoutId="view-pill" size="xs" value={viewMode} onChange={(v) => useUiStore.getState().setViewMode(v)} options={VIEWS.map((v) => ({ ...v, label: v.label }))} />
       </div>
-      <BranchSwitcher />
-      <AvatarStack people={presence.map((p) => ({ name: p.name, color: p.color, online: true }))} size={28} max={3} />
-      <SocketBadge />
-      <Menu>
-        <MenuTrigger asChild>
-          <Button size="icon-sm" variant="secondary" aria-label="More actions"><DotsThreeOutline size={16} weight="fill" /></Button>
-        </MenuTrigger>
-        <MenuContent>
-          <MenuItem onSelect={() => useUiStore.getState().setDialog("share")}><ShareNetwork size={17} weight="bold" /> Share…</MenuItem>
-          <MenuItem onSelect={() => useUiStore.getState().setDialog("export")}><Export size={17} weight="bold" /> Export…</MenuItem>
-          <MenuItem onSelect={async () => {
-            const list = await sessionApi.list(workspaceId).catch(() => []);
-            const id = lastSession?.id ?? list[0]?.id;
-            if (id) router.push(`/w/${workspaceId}/report/${id}`);
-            else toast.info("No sessions yet", { description: "Start Tracking to record a session first." });
-          }}><ChartBar size={17} weight="bold" /> Session report</MenuItem>
-          <MenuItem onSelect={() => useUiStore.getState().setDialog("compare")}><GitBranch size={17} weight="bold" /> Compare branches</MenuItem>
-          <MenuSeparator />
-          <MenuItem onSelect={() => useUiStore.getState().setDialog("shortcuts")}><Keyboard size={17} weight="bold" /> Keyboard shortcuts</MenuItem>
-          <MenuItem onSelect={() => router.push("/settings")}><Robot size={17} weight="bold" /> Extension & MCP settings</MenuItem>
-        </MenuContent>
-      </Menu>
-      <Button size="sm" variant="outline" className="hidden sm:inline-flex" onClick={() => useUiStore.getState().setDialog("share")}><ShareNetwork size={15} weight="bold" /> Share</Button>
-      <UserMenu />
-      <div className="w-full lg:hidden">
-        <Segmented layoutId="view-pill-m" size="xs" value={viewMode} onChange={(v) => useUiStore.getState().setViewMode(v)} options={VIEWS} className="w-full justify-between overflow-x-auto" />
+
+      {/* Right cluster */}
+      <div className="flex shrink-0 items-center gap-1.5">
+        <button onClick={() => useUiStore.getState().setSearchOpen(true)} className="hidden 2xl:flex h-9 w-36 items-center gap-2 rounded-full bg-white px-3 text-left text-xs font-semibold text-faint shadow-clay-sm hover:text-ink transition" aria-label="Search (Ctrl+K)">
+          <MagnifyingGlass size={15} weight="bold" /> Search… <kbd className="ml-auto rounded-md bg-canvas px-1.5 py-0.5 text-[10px]">Ctrl K</kbd>
+        </button>
+        <Tip label="Search (Ctrl+K)">
+          <Button size="icon-sm" variant="secondary" className="2xl:hidden" aria-label="Search" onClick={() => useUiStore.getState().setSearchOpen(true)}><MagnifyingGlass size={16} weight="bold" /></Button>
+        </Tip>
+
+        <div className="hidden sm:flex items-center gap-1">
+          <PanelButton panel="radar" icon={Target} label="Research Radar (R)" count={radar} tone="bg-danger" />
+          <PanelButton panel="conflicts" icon={Sword} label="Conflict Radar (C)" count={conflicts} />
+          <PanelButton panel="memory" icon={Brain} label="Research Memory" />
+          <PanelButton panel="activity" icon={jobsRunning ? Robot : Robot} label="AI activity" />
+          {inbox > 0 && <PanelButton panel="inbox" icon={Tray} label="Inbox (not research)" count={inbox} tone="bg-sky-deep" />}
+        </div>
+
+        <BranchSwitcher />
+
+        <div className="hidden xl:flex items-center gap-1.5">
+          <AvatarStack people={presence.map((p) => ({ name: p.name, color: p.color, online: true }))} size={28} max={3} />
+          <SocketBadge />
+        </div>
+
+        <Button size="sm" variant="outline" className="hidden sm:inline-flex shadow-clay-sm" onClick={() => useUiStore.getState().setDialog("share")}>
+          <ShareNetwork size={15} weight="bold" /> Share
+        </Button>
+
+        <UserMenu />
+
+        <Menu>
+          <MenuTrigger asChild>
+            <Button size="icon-sm" variant="secondary" aria-label="More actions"><DotsThreeOutline size={16} weight="fill" /></Button>
+          </MenuTrigger>
+          <MenuContent>
+            <MenuItem onSelect={() => useUiStore.getState().setDialog("share")}><ShareNetwork size={17} weight="bold" /> Share…</MenuItem>
+            <MenuItem onSelect={() => useUiStore.getState().setDialog("export")}><Export size={17} weight="bold" /> Export…</MenuItem>
+            <MenuItem onSelect={async () => {
+              const list = await sessionApi.list(workspaceId).catch(() => []);
+              const id = lastSession?.id ?? list[0]?.id;
+              if (id) router.push(`/w/${workspaceId}/report/${id}`);
+              else toast.info("No sessions yet", { description: "Start Tracking to record a session first." });
+            }}><ChartBar size={17} weight="bold" /> Session report</MenuItem>
+            <MenuItem onSelect={() => useUiStore.getState().setDialog("compare")}><GitBranch size={17} weight="bold" /> Compare branches</MenuItem>
+            <MenuSeparator />
+            <MenuItem onSelect={() => useUiStore.getState().setDialog("shortcuts")}><Keyboard size={17} weight="bold" /> Keyboard shortcuts</MenuItem>
+            <MenuItem onSelect={() => router.push("/settings")}><Robot size={17} weight="bold" /> Extension & MCP settings</MenuItem>
+          </MenuContent>
+        </Menu>
       </div>
     </header>
   );
@@ -531,16 +549,92 @@ function useShortcuts(readOnly: boolean) {
 /* ---------------------------------------------------------------- screen */
 
 function FocusBar() {
+  const rf = useReactFlow();
   const focusId = useUiStore((s) => s.focusNodeId);
-  const title = useGraphStore((s) => s.nodes.find((n) => n.id === focusId)?.data.node.title);
+  const nodes = useGraphStore((s) => s.nodes);
   const topics = useGraphStore(useShallow((s) => s.nodes.filter((n) => n.type === "topic")));
+
+  const handleSelectTopic = (id: string | null) => {
+    useUiStore.getState().setFocusNode(id);
+    if (id) {
+      const targetNodes = nodes.filter((n) => n.id === id || n.parentId === id);
+      if (targetNodes.length > 0) {
+        rf.fitView({ nodes: targetNodes, duration: 600, padding: 0.3 });
+      } else {
+        rf.fitView({ nodes: [{ id }], duration: 600, padding: 0.4 });
+      }
+    } else {
+      rf.fitView({ duration: 600, padding: 0.1 });
+    }
+  };
+
   return (
-    <div className="absolute left-1/2 top-4 z-10 flex max-w-[90%] -translate-x-1/2 items-center gap-2 overflow-x-auto rounded-full border-2 border-ink bg-white px-3 py-1.5 text-xs font-bold shadow-pop">
-      <button onClick={() => useUiStore.getState().setViewMode("graph")} className="whitespace-nowrap text-purple-deep hover:underline">Full graph</button>
-      <span className="text-faint">›</span>
-      {focusId ? <span className="max-w-60 truncate">{title}</span> : <span className="text-muted">Pick a topic:</span>}
-      {!focusId && topics.map((t) => <button key={t.id} onClick={() => useUiStore.getState().setFocusNode(t.id)} className="whitespace-nowrap rounded-full bg-canvas px-2 py-0.5 hover:bg-lavender-soft">{t.data.node.title}</button>)}
-      {focusId && <button onClick={() => useUiStore.getState().setFocusNode(null)} aria-label="Clear focus" className="text-faint hover:text-ink"><X size={12} weight="bold" /></button>}
+    <div className="absolute left-1/2 top-4 z-10 flex max-w-[92%] -translate-x-1/2 items-center gap-2 overflow-x-auto rounded-full border-2 border-ink bg-white/95 px-3 py-1.5 text-xs font-bold shadow-pop backdrop-blur-md">
+      <div className="flex shrink-0 items-center gap-1.5">
+        <span className="inline-flex items-center gap-1 rounded-full bg-purple px-2 py-0.5 text-[11px] font-extrabold text-white">
+          <CornersOut size={12} weight="bold" /> Focus
+        </span>
+        <button
+          onClick={() => {
+            useUiStore.getState().setFocusNode(null);
+            useUiStore.getState().setViewMode("graph");
+            rf.fitView({ duration: 500, padding: 0.1 });
+          }}
+          className="whitespace-nowrap text-[11px] text-muted hover:text-purple-deep hover:underline"
+        >
+          Full graph
+        </button>
+      </div>
+
+      <span className="shrink-0 text-line">|</span>
+
+      <div className="flex items-center gap-1.5 overflow-x-auto py-0.5">
+        <button
+          onClick={() => handleSelectTopic(null)}
+          className={cn(
+            "whitespace-nowrap rounded-full px-2.5 py-1 text-xs transition",
+            !focusId ? "bg-ink text-white font-extrabold shadow-sm" : "bg-canvas text-ink-soft hover:bg-lavender-soft"
+          )}
+        >
+          All Topics
+        </button>
+
+        {topics.map((t) => {
+          const isSelected = t.id === focusId;
+          const childCount = nodes.filter((n) => n.parentId === t.id).length;
+          return (
+            <button
+              key={t.id}
+              onClick={() => handleSelectTopic(t.id)}
+              className={cn(
+                "inline-flex items-center gap-1.5 whitespace-nowrap rounded-full px-2.5 py-1 text-xs transition",
+                isSelected
+                  ? "bg-purple text-white font-extrabold shadow-sm ring-2 ring-purple-deep"
+                  : "bg-canvas text-ink-soft hover:bg-lavender-soft hover:text-ink"
+              )}
+            >
+              <span className={cn("h-2 w-2 rounded-full", isSelected ? "bg-sun" : "bg-purple/60")} />
+              <span>{t.data.node.title}</span>
+              {childCount > 0 && (
+                <span className={cn("rounded-full px-1.5 py-0.2 text-[10px] font-bold", isSelected ? "bg-white/20 text-white" : "bg-white text-muted")}>
+                  {childCount}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </div>
+
+      {focusId && (
+        <button
+          onClick={() => handleSelectTopic(null)}
+          aria-label="Clear focus filter"
+          title="Show all topics"
+          className="ml-1 grid h-6 w-6 shrink-0 place-items-center rounded-full bg-canvas text-faint hover:bg-coral-soft hover:text-danger"
+        >
+          <X size={12} weight="bold" />
+        </button>
+      )}
     </div>
   );
 }
@@ -567,6 +661,9 @@ function Inner({ workspaceId }: { workspaceId: string }) {
   return (
     <div className="flex h-dvh flex-col bg-dots">
       <TopBar workspaceId={workspaceId} readOnly={readOnly} />
+      <div className="lg:hidden shrink-0 border-b border-ink/5 bg-canvas px-3 py-1.5">
+        <Segmented layoutId="view-pill-m" size="xs" value={viewMode} onChange={(v) => useUiStore.getState().setViewMode(v)} options={VIEWS} className="w-full justify-between overflow-x-auto" />
+      </div>
       <main className="relative min-h-0 flex-1">
         {(viewMode === "graph" || viewMode === "focus") && (
           <>

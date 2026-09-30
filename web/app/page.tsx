@@ -1,87 +1,182 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Reorder } from "motion/react";
 import {
   ArrowRight,
   Play,
-  Article,
-  Heart,
   Lightning,
   EnvelopeSimple,
   Circle,
   Graph,
-  Warning,
-  Lightbulb,
-  FileText,
-  ShieldWarning,
   Robot,
+  Article,
+  FileText,
+  Brain,
+  TreeStructure,
+  Warning,
 } from "@phosphor-icons/react";
 import { useAuthStore } from "@/stores/auth";
 import { toast } from "@/lib/toast";
 
-interface TileItem {
+/* ─── Animated connection graph hero ─── */
+
+interface GraphNode {
   id: string;
-  time: string;
-  title: string;
-  status?: "at_risk";
-  strikethrough?: boolean;
-  borderColor: string;
-  iconBg: string;
-  iconType: "article" | "warning" | "lightbulb" | "shield" | "file";
+  x: number;
+  y: number;
+  label: string;
+  icon: "article" | "file" | "brain" | "tree" | "warning";
+  color: string;
+  bg: string;
+  delay: number;
 }
 
-const INITIAL_TILES: TileItem[] = [
-  {
-    id: "tile-1",
-    time: "9:00",
-    title: "Literature Review Setup",
-    borderColor: "border-l-[#fad47f]",
-    iconBg: "bg-[#fef3d6]",
-    iconType: "article",
-  },
-  {
-    id: "tile-2",
-    time: "10:00",
-    title: "Diagnostic Hallucination Claims",
-    status: "at_risk",
-    borderColor: "border-l-[#f08a6c]",
-    iconBg: "bg-[#fde3d9]",
-    iconType: "warning",
-  },
-  {
-    id: "tile-3",
-    time: "13:00",
-    title: "RAG for EHR Systems",
-    borderColor: "border-l-[#fad47f]",
-    iconBg: "bg-[#fef3d6]",
-    iconType: "lightbulb",
-  },
-  {
-    id: "tile-4",
-    time: "15:00",
-    title: "Unverified Oncology Trial",
-    status: "at_risk",
-    strikethrough: true,
-    borderColor: "border-l-[#d0e8ba]",
-    iconBg: "bg-[#e8f4dc]",
-    iconType: "shield",
-  },
-  {
-    id: "tile-5",
-    time: "18:00",
-    title: "FDA SaMD 2026 Draft",
-    borderColor: "border-l-[#f9cbc9]",
-    iconBg: "bg-[#fde4e2]",
-    iconType: "file",
-  },
+interface GraphEdge {
+  from: string;
+  to: string;
+  delay: number;
+}
+
+const NODES: GraphNode[] = [
+  { id: "n1", x: 50,  y: 30,  label: "Med-PaLM 2",       icon: "article", color: "#a86f00", bg: "#fef3d6", delay: 0 },
+  { id: "n2", x: 220, y: 8,   label: "Clinical NLP",      icon: "brain",   color: "#5a3dd4", bg: "#ece5fe", delay: 0.3 },
+  { id: "n3", x: 180, y: 110, label: "RAG for EHR",       icon: "file",    color: "#3f8a2e", bg: "#e8f4dc", delay: 0.6 },
+  { id: "n4", x: 10,  y: 140, label: "Hallucination Risk", icon: "warning", color: "#c4502f", bg: "#fde3d9", delay: 0.9 },
+  { id: "n5", x: 300, y: 75,  label: "FDA SaMD 2026",     icon: "tree",    color: "#7b5cf0", bg: "#ece5fe", delay: 1.2 },
+  { id: "n6", x: 120, y: 215, label: "Vector DBs",        icon: "brain",   color: "#a86f00", bg: "#fef3d6", delay: 1.5 },
+  { id: "n7", x: 280, y: 185, label: "LLM Regulation",    icon: "file",    color: "#c9544f", bg: "#fde4e2", delay: 1.8 },
 ];
+
+const EDGES: GraphEdge[] = [
+  { from: "n1", to: "n2", delay: 0.5 },
+  { from: "n1", to: "n3", delay: 0.8 },
+  { from: "n1", to: "n4", delay: 1.1 },
+  { from: "n2", to: "n5", delay: 1.4 },
+  { from: "n3", to: "n6", delay: 1.7 },
+  { from: "n5", to: "n7", delay: 2.0 },
+  { from: "n4", to: "n6", delay: 2.3 },
+  { from: "n6", to: "n7", delay: 2.6 },
+];
+
+function NodeIcon({ type, size = 14 }: { type: GraphNode["icon"]; size?: number }) {
+  switch (type) {
+    case "article": return <Article size={size} weight="duotone" />;
+    case "file":    return <FileText size={size} weight="duotone" />;
+    case "brain":   return <Brain size={size} weight="duotone" />;
+    case "tree":    return <TreeStructure size={size} weight="duotone" />;
+    case "warning": return <Warning size={size} weight="fill" />;
+  }
+}
+
+function AnimatedGraph() {
+  const [visible, setVisible] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const t = setTimeout(() => setVisible(true), 300);
+    return () => clearTimeout(t);
+  }, []);
+
+  const nodeMap = Object.fromEntries(NODES.map((n) => [n.id, n]));
+  // Node center offsets (half of node width ~70, height ~32)
+  const cx = (n: GraphNode) => n.x + 70;
+  const cy = (n: GraphNode) => n.y + 20;
+
+  return (
+    <div ref={ref} className="relative h-[300px] w-[400px]" style={{ opacity: visible ? 1 : 0, transition: "opacity 0.6s ease" }}>
+      {/* SVG Edges */}
+      <svg className="absolute inset-0 h-full w-full" style={{ overflow: "visible" }}>
+        <defs>
+          <linearGradient id="edge-grad" x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor="#c6b5f6" />
+            <stop offset="100%" stopColor="#d0e8ba" />
+          </linearGradient>
+        </defs>
+        {EDGES.map((e, i) => {
+          const a = nodeMap[e.from]!;
+          const b = nodeMap[e.to]!;
+          const x1 = cx(a), y1 = cy(a), x2 = cx(b), y2 = cy(b);
+          const len = Math.sqrt((x2 - x1) ** 2 + (y2 - y1) ** 2);
+          return (
+            <line
+              key={i}
+              x1={x1} y1={y1} x2={x2} y2={y2}
+              stroke="url(#edge-grad)"
+              strokeWidth={2}
+              strokeLinecap="round"
+              strokeDasharray={len}
+              strokeDashoffset={len}
+              style={{
+                animation: visible ? `draw-edge 0.8s ease forwards ${e.delay}s` : "none",
+              }}
+            />
+          );
+        })}
+      </svg>
+
+      {/* Nodes */}
+      {NODES.map((n) => (
+        <div
+          key={n.id}
+          className="absolute flex items-center gap-1.5 rounded-xl border border-[#e8e2d6] bg-white px-2.5 py-1.5 shadow-sm cursor-default select-none"
+          style={{
+            left: n.x,
+            top: n.y,
+            opacity: 0,
+            transform: "scale(0.7) translateY(8px)",
+            animation: visible ? `pop-node 0.5s ease forwards ${n.delay}s, float-node 4s ease-in-out ${n.delay + 1}s infinite` : "none",
+          }}
+        >
+          <span className="grid h-6 w-6 shrink-0 place-items-center rounded-lg" style={{ backgroundColor: n.bg, color: n.color }}>
+            <NodeIcon type={n.icon} />
+          </span>
+          <span className="text-[10px] font-bold text-[#1c1b2b] whitespace-nowrap">{n.label}</span>
+        </div>
+      ))}
+
+      {/* Pulsing "connection found" dots on edges */}
+      {EDGES.slice(0, 4).map((e, i) => {
+        const a = nodeMap[e.from]!;
+        const b = nodeMap[e.to]!;
+        const mx = (cx(a) + cx(b)) / 2;
+        const my = (cy(a) + cy(b)) / 2;
+        return (
+          <div
+            key={`dot-${i}`}
+            className="absolute h-2 w-2 rounded-full bg-[#7b5cf0]"
+            style={{
+              left: mx - 4,
+              top: my - 4,
+              opacity: 0,
+              animation: visible ? `pulse-dot 2s ease-in-out ${e.delay + 0.8}s infinite` : "none",
+            }}
+          />
+        );
+      })}
+
+      {/* "Agent synthesizing" badge */}
+      <div
+        className="absolute flex items-center gap-1.5 rounded-full border border-[#7b5cf0]/30 bg-[#ece5fe] px-2.5 py-1 shadow-sm"
+        style={{
+          left: 120,
+          bottom: 10,
+          opacity: 0,
+          animation: visible ? "pop-node 0.5s ease forwards 2.8s" : "none",
+        }}
+      >
+        <Robot size={13} weight="fill" className="text-[#5a3dd4] animate-bounce" />
+        <span className="text-[10px] font-bold text-[#5a3dd4]">Agent 3 linking…</span>
+      </div>
+    </div>
+  );
+}
+
+/* ─── Page ─── */
 
 export default function LandingPage() {
   const router = useRouter();
   const { status, user, bootstrap, login } = useAuthStore();
-  const [tiles, setTiles] = useState<TileItem[]>(INITIAL_TILES);
   const [demoLoading, setDemoLoading] = useState(false);
 
   useEffect(() => {
@@ -105,20 +200,28 @@ export default function LandingPage() {
     }
   };
 
-  const renderIcon = (type: TileItem["iconType"]) => {
-    switch (type) {
-      case "article": return <Article size={16} weight="duotone" className="text-[#a86f00]" />;
-      case "warning": return <Warning size={16} weight="fill" className="text-[#c4502f]" />;
-      case "lightbulb": return <Lightbulb size={16} weight="fill" className="text-[#a86f00]" />;
-      case "shield": return <ShieldWarning size={16} weight="duotone" className="text-[#3f8a2e]" />;
-      case "file": return <FileText size={16} weight="duotone" className="text-[#c9544f]" />;
-    }
-  };
-
   const isLoggedIn = status === "authenticated" && user;
 
   return (
     <div className="min-h-screen bg-[#faf8f4] text-[#1c1b2b] selection:bg-[#fad47f] selection:text-[#1c1b2b] overflow-x-hidden font-sans">
+
+      {/* CSS keyframes for graph animations */}
+      <style>{`
+        @keyframes draw-edge {
+          to { stroke-dashoffset: 0; }
+        }
+        @keyframes pop-node {
+          to { opacity: 1; transform: scale(1) translateY(0); }
+        }
+        @keyframes float-node {
+          0%, 100% { transform: translateY(0); }
+          50% { transform: translateY(-5px); }
+        }
+        @keyframes pulse-dot {
+          0%, 100% { opacity: 0; transform: scale(0.5); }
+          50% { opacity: 0.7; transform: scale(1.5); }
+        }
+      `}</style>
 
       {/* ─── Navigation ─── */}
       <nav className="relative z-30 mx-auto flex max-w-7xl items-center justify-between px-6 py-5 sm:px-8">
@@ -161,14 +264,14 @@ export default function LandingPage() {
 
       {/* ─── Hero ─── */}
       <section className="relative z-10 mx-auto max-w-7xl px-6 pt-4 pb-16 sm:px-8 lg:pt-8 lg:pb-20">
-        <div className="flex items-center justify-between gap-6">
+        <div className="flex items-center justify-between gap-8">
 
           {/* Left: text */}
           <div className="max-w-xl shrink-0 space-y-5">
             {/* NEW pill */}
             <div className="inline-flex items-center gap-2.5 rounded-full border-2 border-[#1c1b2b] bg-white px-3 py-1.5">
               <span className="rounded-full bg-[#f08a6c] px-2 py-0.5 text-[10px] font-black uppercase tracking-wider text-white">NEW</span>
-              <span className="text-xs font-semibold text-[#1c1b2b]">AI Research Agent, watch research synthesize itself</span>
+              <span className="text-xs font-semibold text-[#1c1b2b]">AI Research Agent, watch connections appear live</span>
             </div>
 
             {/* Headline */}
@@ -207,75 +310,13 @@ export default function LandingPage() {
             </div>
           </div>
 
-          {/* Right: card — positioned to sit towards the right, partially clipped */}
-          <div className="hidden lg:block relative w-[380px] shrink-0 mr-[-40px]">
+          {/* Right: Animated connection graph */}
+          <div className="hidden lg:flex items-center justify-center relative">
             {/* Decorative blobs */}
-            <div className="absolute -top-10 -left-10 h-44 w-36 rounded-[50px] bg-[#c6b5f6]/40 -rotate-12 -z-10" />
-            <div className="absolute -bottom-8 -left-6 h-32 w-32 rounded-full bg-[#d0e8ba]/50 -z-10" />
+            <div className="absolute -top-12 -left-14 h-48 w-40 rounded-[50px] bg-[#c6b5f6]/30 -rotate-12 -z-10 pointer-events-none" />
+            <div className="absolute -bottom-10 left-0 h-36 w-36 rounded-full bg-[#d0e8ba]/40 -z-10 pointer-events-none" />
 
-            {/* ZAP starburst */}
-            <div className="absolute -left-3 -top-4 z-30 select-none -rotate-12">
-              <div className="relative grid place-items-center">
-                <svg viewBox="0 0 100 100" className="h-14 w-14 fill-[#fad47f] stroke-[#1c1b2b] stroke-[2.5px] overflow-visible drop-shadow-[2px_2px_0_#1c1b2b]">
-                  <polygon points="50,2 62,26 88,14 80,40 100,52 78,64 86,90 60,80 48,100 38,78 12,86 22,62 0,48 22,38 12,12 38,24" />
-                </svg>
-                <span className="absolute font-black tracking-wider text-[#1c1b2b] text-[10px] uppercase">ZAP!</span>
-              </div>
-            </div>
-
-            {/* Card */}
-            <div className="rounded-[28px] border border-[#e8e2d6] bg-white p-5 shadow-[0_20px_50px_-15px_rgba(28,27,43,0.2)]">
-              {/* Header */}
-              <div className="flex items-start justify-between pb-3">
-                <div>
-                  <p className="text-[10px] font-bold uppercase tracking-widest text-[#9794ab]">SESSION 1 · HEALTHCARE</p>
-                  <h2 className="mt-0.5 font-display text-lg font-black text-[#1c1b2b]">Clinical LLMs & Synthesis</h2>
-                </div>
-                <span className="flex items-center gap-1.5 rounded-full border border-[#7b5cf0]/30 bg-[#ece5fe] px-2.5 py-1 text-[10px] font-bold text-[#5a3dd4]">
-                  <Robot size={12} weight="fill" /> Fixing…
-                </span>
-              </div>
-
-              {/* Tiles */}
-              <Reorder.Group axis="y" values={tiles} onReorder={setTiles} className="space-y-2">
-                {tiles.map((item) => (
-                  <Reorder.Item
-                    key={item.id}
-                    value={item}
-                    className={`group cursor-grab active:cursor-grabbing rounded-xl border border-[#e8e2d6] border-l-[3px] ${item.borderColor} bg-white px-3 py-2.5 transition hover:shadow-md`}
-                    whileDrag={{ scale: 1.02, boxShadow: "0 8px 25px -8px rgba(28,27,43,0.25)" }}
-                  >
-                    <div className="flex items-center justify-between gap-2">
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        <span className={`grid h-8 w-8 shrink-0 place-items-center rounded-lg ${item.iconBg}`}>
-                          {renderIcon(item.iconType)}
-                        </span>
-                        <div className="min-w-0">
-                          <p className="text-[10px] font-semibold text-[#9794ab]">{item.time}</p>
-                          <h3 className={`truncate text-xs font-bold text-[#1c1b2b] ${item.strikethrough ? "line-through text-[#f08a6c]" : ""}`}>
-                            {item.title}
-                          </h3>
-                        </div>
-                      </div>
-                      {item.status === "at_risk" && (
-                        <span className="flex shrink-0 items-center gap-1 text-[10px] font-bold text-[#c4502f]">
-                          <Heart size={11} weight="fill" className="text-[#f08a6c]" /> At risk
-                        </span>
-                      )}
-                    </div>
-                  </Reorder.Item>
-                ))}
-              </Reorder.Group>
-
-              {/* Bottom progress */}
-              <div className="mt-3 flex items-center gap-2 rounded-xl bg-[#f5f1e8] px-3 py-2.5">
-                <span className="h-2.5 w-2.5 shrink-0 rounded-full bg-[#23864b]" />
-                <span className="text-[11px] font-bold text-[#1c1b2b]">Asking 3 agents to synthesize…</span>
-              </div>
-              <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-[#e8e2d6]">
-                <div className="h-full w-3/4 rounded-full bg-gradient-to-r from-[#7b5cf0] via-[#f08a6c] to-[#d0e8ba] animate-pulse" />
-              </div>
-            </div>
+            <AnimatedGraph />
           </div>
 
         </div>

@@ -1,7 +1,7 @@
 /**
  * API contracts — mirror allaboutourproject.md §12.3, §14, §16 and §17.
  * JSON field names are snake_case exactly as the Go backend will send them.
- * Fields marked "(frontend addition)" are documented in web/API_CONTRACT.md.
+ * Fields marked "(frontend addition)" are documented in frontend/API_CONTRACT.md.
  */
 
 export type UUID = string;

@@ -52,7 +52,7 @@ const httpTransport: Transport = {
   },
 };
 
-/** Mock transport — routes the same method + path to the in-browser mock server (web/mock). */
+/** Mock transport — routes the same method + path to the in-browser mock server (frontend/mock). */
 const mockTransport: Transport = {
   async request<T>(method: HttpMethod, path: string, opts: RequestOptions = {}): Promise<T> {
     const { mockServer } = await import("@/mock/server");

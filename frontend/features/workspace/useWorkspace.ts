@@ -11,6 +11,8 @@ import { debounce } from "@/lib/utils/debounce";
 import { connectWorkspaceSocket, type WorkspaceSocket } from "@/lib/ws/socket";
 import { toast } from "@/lib/toast";
 import { browsingSimulator } from "@/lib/extension/simulator";
+import { API_MODE } from "@/lib/api/config";
+import { connectExtension, extensionBridge } from "@/lib/extension/bridge";
 import { useGraphStore } from "@/stores/graph";
 import { useUiStore } from "@/stores/ui";
 import { useSessionStore } from "@/stores/session";
@@ -45,7 +47,8 @@ export function useWorkspace(workspaceId: string) {
       if (vs && vs.branch !== branch) useUiStore.getState().setBranch(vs.branch);
       const active = graph.data.workspace.active_session;
       useSessionStore.getState().setSession(active);
-      if (active?.state === "active" && !browsingSimulator.isRunning(workspaceId)) browsingSimulator.start(workspaceId, active.id);
+      if (API_MODE === "mock" && active?.state === "active" && !browsingSimulator.isRunning(workspaceId)) browsingSimulator.start(workspaceId, active.id);
+      if (API_MODE === "http") void connectExtension().then((ok) => ok && active && active.state !== "stopped" && extensionBridge.startTracking(workspaceId, active.id));
       const jumpTo = new URLSearchParams(window.location.search).get("node");
       if (jumpTo) {
         useUiStore.getState().setViewMode("graph");

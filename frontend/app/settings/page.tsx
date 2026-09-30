@@ -6,7 +6,7 @@ import { ArrowCounterClockwise, Plug, PuzzlePiece, Robot, Trash, Wrench } from "
 import type { CreatedToken } from "@/types/api";
 import { tokensApi } from "@/lib/api";
 import { API_BASE_URL, API_MODE } from "@/lib/api/config";
-import { detectExtension } from "@/lib/extension/bridge";
+import { connectExtension } from "@/lib/extension/bridge";
 import { toast } from "@/lib/toast";
 import { timeAgo } from "@/lib/utils/format";
 import { AuthGate } from "@/components/shell/AuthGate";
@@ -71,10 +71,10 @@ function Settings() {
         <Card className="p-6">
           <div className="flex items-center gap-3"><ArtTile icon={PuzzlePiece} tone="mint" /><div className="flex-1"><h2 className="text-lg font-bold">Chrome extension</h2><p className="text-sm text-muted">Tracks tabs and time, captures pages and previews, powers Go to tab.</p></div><Pill tone={connected ? "mint" : "ink"}>{connected ? "Connected" : "Not connected"}</Pill></div>
           <div className="mt-4 flex flex-wrap gap-2">
-            <Button variant="primary" size="sm" onClick={async () => { const ok = await detectExtension(); setConnected(ok); if (ok) toast.success("Extension connected"); else toast.warning("Extension not found", { description: "Install it unpacked and set NEXT_PUBLIC_EXTENSION_ID." }); }}><Plug size={16} weight="bold" /> Connect extension</Button>
+            <Button variant="primary" size="sm" onClick={async () => { const ok = await connectExtension({ forceNewToken: true }).catch(() => false); setConnected(ok); if (ok) toast.success("Extension connected"); else toast.warning("Extension not found", { description: "Load the extension folder unpacked in chrome://extensions and set NEXT_PUBLIC_EXTENSION_ID." }); }}><Plug size={16} weight="bold" /> Connect extension</Button>
             <Button variant="secondary" size="sm" loading={create.isPending} onClick={() => create.mutate("extension")}>Create extension token</Button>
           </div>
-          <label className="mt-4 flex items-center justify-between gap-4 rounded-2xl bg-canvas p-3"><span><span className="block text-sm font-bold">Use browsing simulator (demo)</span><span className="text-xs text-muted">While tracking, a scripted research journey stands in for the extension.</span></span><Switch label="Use browsing simulator" checked={simulated} onCheckedChange={setSimulated} /></label>
+          {API_MODE === "mock" && <label className="mt-4 flex items-center justify-between gap-4 rounded-2xl bg-canvas p-3"><span><span className="block text-sm font-bold">Use browsing simulator (demo)</span><span className="text-xs text-muted">While tracking, a scripted research journey stands in for the extension.</span></span><Switch label="Use browsing simulator" checked={simulated} onCheckedChange={setSimulated} /></label>}
         </Card>
 
         <Card className="p-6">

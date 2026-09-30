@@ -9,16 +9,16 @@
 
 | Part (spec §9) | Status | Where |
 |---|---|---|
-| **Web app (Next.js 16)**: every screen, interaction, state | ✅ Built | `web/` |
-| **API client + typed contracts** for all §17 endpoints | ✅ Built | `web/lib/api/`, `web/types/api.ts` |
-| **WebSocket client abstraction** (real + mock) | ✅ Built | `web/lib/ws/socket.ts` |
-| **Mock backend** (runs in the browser; same paths and JSON as Go will use) | ✅ Built, stand-in only | `web/mock/` |
-| **Simulated AI pipeline** (Agent 1 → 2 → 3, conflicts, radar, report text) | ✅ Simulated in mock | `web/mock/pipeline.ts`, `web/mock/compute.ts` |
-| **Simulated extension** (browsing script while tracking) | ✅ Simulated | `web/lib/extension/simulator.ts` |
-| **Extension bridge** (web app → extension messages) | ✅ Client side built | `web/lib/extension/bridge.ts` |
-| Go backend (Gin, PostgreSQL, River, WebSocket hub, MCP) | ❌ Not built | `api/` (to do) |
-| Python AI service (FastAPI, Groq, fastembed) | ❌ Not built | `agent/` (to do) |
-| Chrome extension (WXT) | ❌ Not built | `extension/` (to do) |
+| **Web app (Next.js 16, `frontend/`)**: every screen, interaction, state | ✅ Built | `frontend/` |
+| **API client + typed contracts** for all §17 endpoints | ✅ Built | `frontend/lib/api/`, `frontend/types/api.ts` |
+| **WebSocket client abstraction** (real + mock) | ✅ Built | `frontend/lib/ws/socket.ts` |
+| **Mock backend** (runs in the browser; same paths and JSON as Go will use) | ✅ Built, stand-in only | `frontend/mock/` |
+| **Simulated AI pipeline** (Agent 1 → 2 → 3, conflicts, radar, report text) | ✅ Simulated in mock | `frontend/mock/pipeline.ts`, `frontend/mock/compute.ts` |
+| **Simulated extension** (browsing script while tracking) | ✅ Simulated | `frontend/lib/extension/simulator.ts` |
+| **Extension bridge** (web app → extension messages) | ✅ Client side built | `frontend/lib/extension/bridge.ts` |
+| Go backend (Gin, PostgreSQL, River, WebSocket hub, MCP) | ❌ Not built | `backend/` (Go) |
+| Python AI service (FastAPI, Groq, fastembed) | ❌ Not built | `agent/` |
+| Chrome extension (WXT) | ❌ Not built | `extension/` |
 
 **Key point:** the frontend never talks to the mock directly. Everything goes through `apiClient` → transport. Switching to Go is **one env var**; no component changes.
 
@@ -27,7 +27,7 @@
 ## 2. Run it
 
 ```bash
-cd web
+cd frontend
 npm install
 npm run dev          # http://localhost:3000
 ```
@@ -36,7 +36,7 @@ Log in with **Continue with demo account** (`demo@researchmap.app` / `demo1234`)
 
 Checks: `npx tsc --noEmit` · `npx eslint .` · `npm run build` all pass.
 
-### Environment (`web/.env.example`, public values only)
+### Environment (`frontend/.env.example`, public values only)
 
 | Var | Default | Meaning |
 |---|---|---|
@@ -51,8 +51,8 @@ Checks: `npx tsc --noEmit` · `npx eslint .` · `npm run build` all pass.
 
 ## 3. Switching to the real Go backend (3 steps)
 
-1. Go serves `http://localhost:8080/api/v1/...` with the endpoints in §4 and the JSON shapes in `web/types/api.ts`.
-2. `web/.env.local`:
+1. Go serves `http://localhost:8080/api/v1/...` with the endpoints in §4 and the JSON shapes in `frontend/types/api.ts`.
+2. `frontend/.env.local`:
    ```env
    NEXT_PUBLIC_API_MODE=http
    API_PROXY_TARGET=http://localhost:8080
@@ -61,20 +61,20 @@ Checks: `npx tsc --noEmit` · `npx eslint .` · `npm run build` all pass.
 
 **Rules the frontend relies on:**
 - **Auth**: JWT in an **httpOnly cookie**; the client sends `credentials: "include"`. `GET /me` → 401 means logged out (redirects to `/login`).
-- **Errors** (all endpoints): `{"error": {"code": "...", "message": "..."}}`. Codes used by the UI: `bad_request, unauthorized, forbidden, not_found, conflict, validation_failed, rate_limited, ai_unavailable, internal`. Parsed in `web/lib/api/errors.ts`; the UI shows `message`, never stack traces.
+- **Errors** (all endpoints): `{"error": {"code": "...", "message": "..."}}`. Codes used by the UI: `bad_request, unauthorized, forbidden, not_found, conflict, validation_failed, rate_limited, ai_unavailable, internal`. Parsed in `frontend/lib/api/errors.ts`; the UI shows `message`, never stack traces.
 - **JSON casing**: snake_case everywhere (`workspace_id`, `created_at`, …).
 - **Times**: ISO-8601 UTC strings.
 - **Optimistic concurrency**: `PATCH /nodes/:id` and `PATCH /edges/:id` send `version`. On a stale version return **409** with the latest object in `error.details`; the UI replaces its copy and shows "Updated by someone else".
 - **Every write broadcasts a WebSocket event** (§5). The UI applies events idempotently (upsert by id), so echoing the author's own change is fine.
 - **Node positions**: `x,y` of a node inside a topic are **relative to the parent topic** (`parent_id`), as React Flow expects. Top-level nodes use absolute coordinates.
 
-**Reference implementation:** `web/mock/server.ts` implements every route. Permission checks (`requireWorkspace(id, "editor")`), branch selection, event logging and broadcasts are written the way the Go handlers should work. `web/mock/compute.ts` has the exact radar formula, stats definitions, search ranking stand-in and export formats.
+**Reference implementation:** `frontend/mock/server.ts` implements every route. Permission checks (`requireWorkspace(id, "editor")`), branch selection, event logging and broadcasts are written the way the Go handlers should work. `frontend/mock/compute.ts` has the exact radar formula, stats definitions, search ranking stand-in and export formats.
 
 ---
 
 ## 4. REST API — every endpoint the frontend calls (70)
 
-Base `/api/v1`. **★ = frontend addition, not yet in spec §17** (small, needed by the UI). Types live in `web/types/api.ts`; frontend callers are in `web/lib/api/<file>`.
+Base `/api/v1`. **★ = frontend addition, not yet in spec §17** (small, needed by the UI). Types live in `frontend/types/api.ts`; frontend callers are in `frontend/lib/api/<file>`.
 
 ### Auth & tokens — `lib/api/auth.ts`
 | Method & path | Body → Response |
@@ -206,7 +206,7 @@ Already built on the web side, in `lib/extension/bridge.ts` + `stores/extension.
 
 ## 7. Frontend — what exists
 
-**Routes** (`web/app`)
+**Routes** (`frontend/app`)
 | Route | Screen |
 |---|---|
 | `/login`, `/register` | Split auth layout; demo-account button in mock mode |
@@ -229,15 +229,15 @@ Already built on the web side, in `lib/extension/bridge.ts` + `stores/extension.
 
 **Code map**
 ```
-web/types/api.ts          all contracts
-web/lib/api/*             one module per endpoint group (the only place HTTP happens)
-web/lib/ws/socket.ts      WebSocket (real + mock)
-web/lib/extension/*       extension bridge + demo simulator
-web/stores/*              Zustand: auth, graph, ui, session, collab/signals, extension
-web/features/graph/actions.ts   all graph mutations (optimistic + API + toasts)
-web/features/*            canvas, panels, views, search, workspace screen, dialogs
-web/components/ui/*       design system (DESIGN.md)
-web/mock/*                mock backend: db, seed, server (routes), compute, pipeline, presence
+frontend/types/api.ts          all contracts
+frontend/lib/api/*             one module per endpoint group (the only place HTTP happens)
+frontend/lib/ws/socket.ts      WebSocket (real + mock)
+frontend/lib/extension/*       extension bridge + demo simulator
+frontend/stores/*              Zustand: auth, graph, ui, session, collab/signals, extension
+frontend/features/graph/actions.ts   all graph mutations (optimistic + API + toasts)
+frontend/features/*            canvas, panels, views, search, workspace screen, dialogs
+frontend/components/ui/*       design system (DESIGN.md)
+frontend/mock/*                mock backend: db, seed, server (routes), compute, pipeline, presence
 ```
 
 ---

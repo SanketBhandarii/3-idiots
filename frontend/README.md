@@ -6,7 +6,7 @@ Frontend and API-contract layer for **Visual Research & Browser Tab Manager** (s
 ## Run
 
 ```bash
-cd web && npm install && npm run dev
+cd frontend && npm install && npm run dev
 ```
 
 Open http://localhost:3000 and click **Continue with demo account** (`demo@researchmap.app` / `demo1234`).

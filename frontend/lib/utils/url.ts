@@ -6,12 +6,13 @@ export function normalizeUrl(raw: string): string {
     [...u.searchParams.keys()].forEach((k) => {
       if (k.startsWith("utm_") || k === "fbclid" || k === "gclid") u.searchParams.delete(k);
     });
-    u.hostname = u.hostname.replace(/^www\./, "");
+    // Host is case-insensitive; path and query keep their case (decision D4).
+    u.hostname = u.hostname.toLowerCase().replace(/^www\./, "");
     let s = u.toString();
     if (s.endsWith("/")) s = s.slice(0, -1);
-    return s.toLowerCase();
+    return s;
   } catch {
-    return raw.trim().toLowerCase();
+    return raw.trim();
   }
 }
 

@@ -1,5 +1,5 @@
 /**
- * Public, non-secret configuration only (NEXT_PUBLIC_*). See web/.env.example.
+ * Public, non-secret configuration only (NEXT_PUBLIC_*). See frontend/.env.example.
  *   NEXT_PUBLIC_API_MODE      "mock" (default) | "http"
  *   NEXT_PUBLIC_API_BASE_URL  base path for REST, default "/api/v1"
  *   NEXT_PUBLIC_WS_URL        WebSocket URL, default derived from the page origin

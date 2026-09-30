@@ -48,6 +48,9 @@ import { cn } from "@/lib/utils/cn";
 import { formatClock } from "@/lib/utils/format";
 import { PAGE_TYPE_LABEL } from "@/lib/domain/meta";
 import { browsingSimulator } from "@/lib/extension/simulator";
+import { API_MODE } from "@/lib/api/config";
+import { extensionBridge } from "@/lib/extension/bridge";
+import { useExtensionStore } from "@/stores/extension";
 import { Button } from "@/components/ui/button";
 import { AvatarStack, Chip, Segmented, Tip } from "@/components/ui/primitives";
 import { Menu, MenuContent, MenuItem, MenuLabel, MenuSeparator, MenuTrigger, Pop } from "@/components/ui/overlay";
@@ -94,14 +97,16 @@ function useSessionControls(workspaceId: string) {
       wrap(async () => {
         const s = await sessionApi.start(workspaceId);
         setSession(s);
-        browsingSimulator.start(workspaceId, s.id);
-        toast.success("Tracking started", { description: "Browse normally — research pages become nodes automatically (demo browsing simulated)." });
+        if (API_MODE === "mock") browsingSimulator.start(workspaceId, s.id);
+        else extensionBridge.startTracking(workspaceId, s.id);
+        toast.success("Tracking started", { description: "Browse normally — research pages become nodes automatically." });
         void qc.invalidateQueries({ queryKey: qk.sessions(workspaceId) });
       }),
     pause: () =>
       wrap(async () => {
         if (!session) return;
-        browsingSimulator.pause();
+        if (API_MODE === "mock") browsingSimulator.pause();
+        else extensionBridge.pauseTracking();
         setSession(await sessionApi.pause(session.id));
         toast.info("Tracking paused");
       }),
@@ -109,14 +114,16 @@ function useSessionControls(workspaceId: string) {
       wrap(async () => {
         if (!session) return;
         setSession(await sessionApi.resume(session.id));
-        browsingSimulator.resume();
+        if (API_MODE === "mock") browsingSimulator.resume();
+        else extensionBridge.resumeTracking();
         toast.info("Tracking resumed");
       }),
     stop: async () =>
       (await wrap(async () => {
         if (!session) return null;
-        const tabs = browsingSimulator.openTabs();
+        const tabs = API_MODE === "mock" ? browsingSimulator.openTabs() : Object.keys(useExtensionStore.getState().tabs);
         browsingSimulator.stop();
+        if (API_MODE !== "mock") extensionBridge.stopTracking();
         const s = await sessionApi.stop(session.id, tabs);
         setSession(null);
         toast.success("Tracking stopped", { description: `${s.title} saved` });

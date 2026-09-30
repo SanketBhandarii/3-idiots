@@ -234,7 +234,7 @@ export default function LandingPage() {
             <div className="rounded-[32px] border-[2.5px] border-[#1c1b2b] bg-white p-5 shadow-[0_20px_50px_-10px_rgba(28,27,43,0.18)]">
 
               {/* Card Header */}
-              <div className="flex items-start justify-between pb-3">
+              <div className="flex items-start justify-between pb-2">
                 <div>
                   <p className="text-[10px] font-bold uppercase tracking-widest text-[#9794ab]">SESSION 1 · HEALTHCARE</p>
                   <h2 className="mt-0.5 font-display text-lg font-black text-[#1c1b2b]">Clinical AI & Synthesis</h2>
@@ -244,7 +244,77 @@ export default function LandingPage() {
                 </span>
               </div>
 
-              {/* Moveable Draggable Tiles */}
+              {/* ── Mini Connection Graph ── */}
+              <div className="relative h-[72px] w-full rounded-xl bg-[#f5f1e8]/60 border border-[#e8e2d6] mb-2 overflow-hidden">
+                <svg className="absolute inset-0 h-full w-full" viewBox="0 0 340 72">
+                  <defs>
+                    <linearGradient id="mini-grad" x1="0%" y1="0%" x2="100%" y2="0%">
+                      <stop offset="0%" stopColor="#c6b5f6" />
+                      <stop offset="100%" stopColor="#7b5cf0" />
+                    </linearGradient>
+                    <linearGradient id="mini-conflict" x1="0%" y1="0%" x2="100%" y2="0%">
+                      <stop offset="0%" stopColor="#f08a6c" />
+                      <stop offset="100%" stopColor="#c4502f" />
+                    </linearGradient>
+                  </defs>
+                  {/* Connection lines */}
+                  <path d="M 55 28 L 140 22" stroke="url(#mini-grad)" strokeWidth="1.5" fill="none" strokeOpacity="0.7" />
+                  <path d="M 140 22 L 240 20" stroke="url(#mini-grad)" strokeWidth="1.5" fill="none" strokeOpacity="0.7" />
+                  <path d="M 140 22 L 170 52" stroke="url(#mini-grad)" strokeWidth="1.5" fill="none" strokeOpacity="0.5" />
+                  <path d="M 55 28 L 90 55" stroke="url(#mini-conflict)" strokeWidth="1.5" fill="none" strokeDasharray="4,3" strokeOpacity="0.8" />
+                  <path d="M 240 20 L 285 48" stroke="url(#mini-grad)" strokeWidth="1.5" fill="none" strokeOpacity="0.5" />
+                  <path d="M 170 52 L 285 48" stroke="url(#mini-grad)" strokeWidth="1.5" fill="none" strokeOpacity="0.4" />
+
+                  {/* Traveling light dots */}
+                  <circle r="2.5" fill="#7b5cf0">
+                    <animateMotion dur="2.5s" repeatCount="indefinite" path="M 55 28 L 140 22" begin="0s" />
+                  </circle>
+                  <circle r="2.5" fill="#7b5cf0">
+                    <animateMotion dur="3s" repeatCount="indefinite" path="M 140 22 L 240 20" begin="0.4s" />
+                  </circle>
+                  <circle r="2" fill="#c4502f">
+                    <animateMotion dur="2s" repeatCount="indefinite" path="M 55 28 L 90 55" begin="0.8s" />
+                  </circle>
+                  <circle r="2.5" fill="#7b5cf0">
+                    <animateMotion dur="2.8s" repeatCount="indefinite" path="M 140 22 L 170 52" begin="1.2s" />
+                  </circle>
+                  <circle r="2" fill="#5a3dd4">
+                    <animateMotion dur="3.2s" repeatCount="indefinite" path="M 240 20 L 285 48" begin="0.6s" />
+                  </circle>
+
+                  {/* Node circles with labels */}
+                  {/* Node 1: Med-PaLM */}
+                  <circle cx="55" cy="28" r="10" fill="#fef3d6" stroke="#a86f00" strokeWidth="1.5" />
+                  <text x="55" y="31" textAnchor="middle" fill="#a86f00" fontSize="7" fontWeight="800">M</text>
+
+                  {/* Node 2: Clinical NLP */}
+                  <circle cx="140" cy="22" r="10" fill="#ece5fe" stroke="#5a3dd4" strokeWidth="1.5" />
+                  <text x="140" y="25" textAnchor="middle" fill="#5a3dd4" fontSize="7" fontWeight="800">C</text>
+
+                  {/* Node 3: FDA SaMD */}
+                  <circle cx="240" cy="20" r="10" fill="#ece5fe" stroke="#7b5cf0" strokeWidth="1.5" />
+                  <text x="240" y="23" textAnchor="middle" fill="#7b5cf0" fontSize="7" fontWeight="800">F</text>
+
+                  {/* Node 4: Hallucination (conflict) */}
+                  <circle cx="90" cy="55" r="10" fill="#fde3d9" stroke="#c4502f" strokeWidth="1.5" strokeDasharray="3,2" />
+                  <text x="90" y="58" textAnchor="middle" fill="#c4502f" fontSize="7" fontWeight="800">⚠</text>
+
+                  {/* Node 5: RAG */}
+                  <circle cx="170" cy="52" r="10" fill="#e8f4dc" stroke="#3f8a2e" strokeWidth="1.5" />
+                  <text x="170" y="55" textAnchor="middle" fill="#3f8a2e" fontSize="7" fontWeight="800">R</text>
+
+                  {/* Node 6: Regulation */}
+                  <circle cx="285" cy="48" r="10" fill="#fde4e2" stroke="#c9544f" strokeWidth="1.5" />
+                  <text x="285" y="51" textAnchor="middle" fill="#c9544f" fontSize="7" fontWeight="800">L</text>
+                </svg>
+                {/* Tiny legend */}
+                <div className="absolute bottom-1 right-2 flex items-center gap-2 text-[8px] font-bold text-[#9794ab]">
+                  <span className="flex items-center gap-0.5"><span className="inline-block h-1.5 w-4 rounded-full bg-[#7b5cf0]" />linked</span>
+                  <span className="flex items-center gap-0.5"><span className="inline-block h-1.5 w-4 rounded-full bg-[#c4502f] opacity-70" style={{ backgroundImage: "repeating-linear-gradient(90deg, #c4502f 0 3px, transparent 3px 6px)" }} />conflict</span>
+                </div>
+              </div>
+
+
               <Reorder.Group axis="y" values={tiles} onReorder={setTiles} className="space-y-2 mt-1">
                 {tiles.map((item) => (
                   <Reorder.Item

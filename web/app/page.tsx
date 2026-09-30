@@ -8,13 +8,15 @@ import {
   Play,
   Article,
   Heart,
-  Car,
-  BowlFood,
-  Coffee,
   Lightning,
   EnvelopeSimple,
   Circle,
   Compass,
+  Graph,
+  Warning,
+  Lightbulb,
+  FileText,
+  ShieldWarning,
 } from "@phosphor-icons/react";
 import { useAuthStore } from "@/stores/auth";
 import { toast } from "@/lib/toast";
@@ -26,47 +28,47 @@ interface TileItem {
   status?: "at_risk";
   strikethrough?: boolean;
   boxColor: string;
-  iconType: "car" | "parachute" | "food" | "ropeway" | "coffee";
+  iconType: "article" | "warning" | "lightbulb" | "shield" | "file";
 }
 
 const INITIAL_TILES: TileItem[] = [
   {
     id: "tile-1",
     time: "9:00",
-    title: "Hotel pickup · Clinical Data",
+    title: "PubMed · Med-PaLM 2 Clinical Benchmarks",
     boxColor: "bg-[#fef3d6] text-[#a86f00]",
-    iconType: "car",
+    iconType: "article",
   },
   {
     id: "tile-2",
     time: "10:00",
-    title: "Paragliding at Solang",
+    title: "Diagnostic Hallucination Disagreement",
     status: "at_risk",
     boxColor: "bg-[#fde3d9] text-[#c4502f]",
-    iconType: "parachute",
+    iconType: "warning",
   },
   {
     id: "tile-3",
     time: "13:00",
-    title: "Lunch · Solang Dhaba",
+    title: "Retrieval-Augmented Generation for EHR",
     boxColor: "bg-[#fef3d6] text-[#a86f00]",
-    iconType: "food",
+    iconType: "lightbulb",
   },
   {
     id: "tile-4",
     time: "15:00",
-    title: "Solang Ropeway ride",
+    title: "Unverified Oncology Trial Data",
     status: "at_risk",
     strikethrough: true,
     boxColor: "bg-[#e8f4dc] text-[#3f8a2e]",
-    iconType: "ropeway",
+    iconType: "shield",
   },
   {
     id: "tile-5",
     time: "18:00",
-    title: "Café 1947, Old Manali",
+    title: "FDA SaMD 2026 Regulatory Guidance Draft",
     boxColor: "bg-[#fde4e2] text-[#c9544f]",
-    iconType: "coffee",
+    iconType: "file",
   },
 ];
 
@@ -85,7 +87,7 @@ export default function LandingPage() {
     try {
       const ok = await login({ email: "demo@researchmap.app", password: "demo1234" });
       if (ok) {
-        toast.success("Welcome!", { description: "Opening workspace..." });
+        toast.success("Welcome!", { description: "Opening AI in Healthcare workspace..." });
         router.push("/workspaces");
       } else {
         router.push("/login");
@@ -99,16 +101,16 @@ export default function LandingPage() {
 
   const renderIcon = (type: TileItem["iconType"]) => {
     switch (type) {
-      case "car":
-        return <Car size={18} weight="duotone" />;
-      case "parachute":
+      case "article":
         return <Article size={18} weight="duotone" />;
-      case "food":
-        return <BowlFood size={18} weight="duotone" />;
-      case "ropeway":
-        return <Car size={18} weight="duotone" />;
-      case "coffee":
-        return <Coffee size={18} weight="duotone" />;
+      case "warning":
+        return <Warning size={18} weight="duotone" />;
+      case "lightbulb":
+        return <Lightbulb size={18} weight="duotone" />;
+      case "shield":
+        return <ShieldWarning size={18} weight="duotone" />;
+      case "file":
+        return <FileText size={18} weight="duotone" />;
     }
   };
 
@@ -127,11 +129,11 @@ export default function LandingPage() {
       <nav className="relative z-30 mx-auto flex max-w-7xl items-center justify-between px-6 py-6 sm:px-8">
         {/* Brand Logo */}
         <Link href="/" className="flex items-center gap-2.5 group">
-          <div className="grid h-9 w-9 place-items-center rounded-full bg-[#1c1b2b] text-white">
-            <span className="text-xs">✦</span>
+          <div className="grid h-9 w-9 -rotate-6 place-items-center rounded-[30%] border-2 border-[#1c1b2b] bg-[#fad47f] shadow-[2px_2px_0px_#1c1b2b]">
+            <Graph size={20} weight="duotone" className="text-[#1c1b2b]" />
           </div>
           <span className="font-display text-2xl font-black tracking-tight text-[#1c1b2b]">
-            trizpyy
+            Research Map
           </span>
         </Link>
 
@@ -139,8 +141,8 @@ export default function LandingPage() {
         <div className="hidden md:flex items-center gap-8 text-[15px] font-bold text-[#1c1b2b]/80">
           <a href="#how-it-works" className="hover:text-[#1c1b2b] transition">How it works</a>
           <a href="#features" className="hover:text-[#1c1b2b] transition">Features</a>
-          <a href="#operators" className="hover:text-[#1c1b2b] transition">For operators</a>
-          <a href="#destinations" className="hover:text-[#1c1b2b] transition">Destinations</a>
+          <a href="#agents" className="hover:text-[#1c1b2b] transition">AI Agents</a>
+          <a href="#workspaces" className="hover:text-[#1c1b2b] transition">Workspaces</a>
         </div>
 
         {/* Right CTA */}
@@ -174,17 +176,17 @@ export default function LandingPage() {
                 NEW
               </span>
               <span className="text-xs font-bold text-[#1c1b2b]">
-                Trip Fixer Agent, watch a trip repair itself
+                AI Research Agent, watch a research map synthesize itself
               </span>
             </div>
 
             {/* Massive Bold Headline */}
             <h1 className="font-display text-5xl sm:text-6xl md:text-7xl lg:text-[76px] font-black tracking-tight text-[#1c1b2b] leading-[0.98]">
               Plan your<br />
-              own trip.<br />
+              own research.<br />
               We handle<br />
               <span className="relative inline-block">
-                <span className="relative z-10">the changes.</span>
+                <span className="relative z-10">the connections.</span>
                 <span className="absolute left-0 bottom-1.5 h-4 sm:h-5 w-full -rotate-1 bg-[#fad47f] z-0 rounded-xs" />
               </span>
             </h1>
@@ -197,7 +199,7 @@ export default function LandingPage() {
                 className="inline-flex items-center justify-center gap-2.5 rounded-full bg-[#1c1b2b] px-8 py-4 text-base font-extrabold text-white shadow-[4px_4px_0px_#1c1b2b] hover:-translate-y-0.5 hover:shadow-[6px_6px_0px_#1c1b2b] transition cursor-pointer"
               >
                 <ArrowRight size={18} weight="bold" />
-                {demoLoading ? "Opening Demo..." : "Start planning"}
+                {demoLoading ? "Opening Demo..." : "Start researching"}
               </button>
 
               <Link
@@ -205,7 +207,7 @@ export default function LandingPage() {
                 className="inline-flex items-center justify-center gap-2.5 rounded-full border-[2.5px] border-[#1c1b2b] bg-white px-8 py-4 text-base font-extrabold text-[#1c1b2b] shadow-xs hover:bg-[#FAF8F5] hover:-translate-y-0.5 transition"
               >
                 <Play size={16} weight="fill" className="text-[#1c1b2b]" />
-                Plan a trip
+                Explore demo
               </Link>
             </div>
 
@@ -213,15 +215,15 @@ export default function LandingPage() {
             <div className="flex flex-wrap items-center gap-6 pt-3 text-xs sm:text-sm font-extrabold text-[#3a3850]">
               <div className="flex items-center gap-2">
                 <Lightning size={16} weight="fill" className="text-[#fad47f]" />
-                <span>Trip in under a minute</span>
+                <span>Tabs to nodes in seconds</span>
               </div>
               <div className="flex items-center gap-2">
                 <EnvelopeSimple size={16} weight="bold" className="text-[#23864b]" />
-                <span>Tickets by email</span>
+                <span>Instant session report</span>
               </div>
               <div className="flex items-center gap-2">
                 <Circle size={10} weight="fill" className="text-[#7b5cf0]" />
-                <span>Nothing half-updated</span>
+                <span>Conflict radar & alerts</span>
               </div>
             </div>
 
@@ -257,16 +259,16 @@ export default function LandingPage() {
                 <div className="flex items-start justify-between pb-3">
                   <div>
                     <p className="text-[11px] font-extrabold uppercase tracking-widest text-[#9794ab]">
-                      DAY 2 · MANALI
+                      SESSION 1 · AI IN HEALTHCARE
                     </p>
                     <h2 className="font-display text-xl sm:text-2xl font-black text-[#1c1b2b]">
-                      Solang Valley day
+                      Clinical LLMs & Synthesis
                     </h2>
                   </div>
 
-                  {/* Weather / Status Pill */}
+                  {/* Status Pill */}
                   <div className="rounded-full border-2 border-[#1c1b2b]/20 bg-[#FAF8F5] px-3.5 py-1 text-xs font-black text-[#1c1b2b]">
-                    18°C
+                    Analyzing…
                   </div>
                 </div>
 
@@ -322,7 +324,7 @@ export default function LandingPage() {
                 <div className="rounded-2xl border-2 border-[#1c1b2b]/15 bg-[#FAF8F5] p-3">
                   <div className="flex items-center gap-2 text-xs font-black text-[#1c1b2b]">
                     <span className="h-2.5 w-2.5 rounded-full bg-[#23864b] shrink-0" />
-                    <span>Asking 3 vendors instantly…</span>
+                    <span>Asking 3 AI agents to synthesize…</span>
                   </div>
                   <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-white border border-[#1c1b2b]/10">
                     <div className="h-full w-4/5 rounded-full bg-linear-to-r from-[#7b5cf0] via-[#f08a6c] to-[#d0e8ba] animate-pulse" />
@@ -350,14 +352,14 @@ export default function LandingPage() {
         <div className="mx-auto max-w-7xl px-6 sm:px-8">
           <div className="text-center max-w-2xl mx-auto space-y-2">
             <span className="rounded-full bg-[#ece5fe] px-3 py-1 text-xs font-black uppercase tracking-wider text-[#5a3dd4]">
-              Intelligent Planning
+              Intelligent Synthesis
             </span>
             <h2 className="font-display text-3xl sm:text-4xl font-black text-[#1c1b2b]">
-              Watch your plan repair itself.
+              Browse normally. Your graph builds itself.
             </h2>
             <p className="text-[#625f78] font-medium text-sm sm:text-base">
-              Autonomous agents monitor delays, weather, and venue status, dynamically rescheduling
-              and booking alternatives in real-time.
+              Autonomous background agents extract key takeaways, discover semantic links,
+              detect contradictions, and build knowledge maps in real-time.
             </p>
           </div>
 
@@ -366,9 +368,9 @@ export default function LandingPage() {
               <span className="grid h-12 w-12 place-items-center rounded-2xl border-2 border-[#1c1b2b] bg-[#fad47f] text-[#1c1b2b] font-display font-black text-lg shadow-xs">
                 1
               </span>
-              <h3 className="mt-4 font-display text-lg font-black text-[#1c1b2b]">Build your day</h3>
+              <h3 className="mt-4 font-display text-lg font-black text-[#1c1b2b]">Turn Tracking On</h3>
               <p className="mt-2 text-xs sm:text-sm text-[#625f78] leading-relaxed font-medium">
-                Assemble activities, stays, and transfers into an interactive timeline in seconds.
+                Browse as usual. Research pages you read are captured automatically with live tab previews.
               </p>
             </div>
 
@@ -376,9 +378,9 @@ export default function LandingPage() {
               <span className="grid h-12 w-12 place-items-center rounded-2xl border-2 border-[#1c1b2b] bg-[#fde3d9] text-[#c4502f] font-display font-black text-lg shadow-xs">
                 2
               </span>
-              <h3 className="mt-4 font-display text-lg font-black text-[#1c1b2b]">Live Agent Watch</h3>
+              <h3 className="mt-4 font-display text-lg font-black text-[#1c1b2b]">3 AI Agents Pipeline</h3>
               <p className="mt-2 text-xs sm:text-sm text-[#625f78] leading-relaxed font-medium">
-                Agents track road closures, ticket availability, and vendor confirmations continuously.
+                Agent 1 filters inbox noise. Agent 2 extracts concepts. Agent 3 links topics and surfaces conflicts.
               </p>
             </div>
 
@@ -386,9 +388,9 @@ export default function LandingPage() {
               <span className="grid h-12 w-12 place-items-center rounded-2xl border-2 border-[#1c1b2b] bg-[#e8f4dc] text-[#3f8a2e] font-display font-black text-lg shadow-xs">
                 3
               </span>
-              <h3 className="mt-4 font-display text-lg font-black text-[#1c1b2b]">Instant Resolutions</h3>
+              <h3 className="mt-4 font-display text-lg font-black text-[#1c1b2b]">Instant Synthesis Reports</h3>
               <p className="mt-2 text-xs sm:text-sm text-[#625f78] leading-relaxed font-medium">
-                When conflicts happen, get one-tap automated fixes and instant replacement bookings.
+                Generate executive session summaries, markdown notes, and branch comparisons with one click.
               </p>
             </div>
           </div>
@@ -400,11 +402,11 @@ export default function LandingPage() {
         <div className="mx-auto flex max-w-7xl flex-col sm:flex-row items-center justify-between gap-4 px-6 sm:px-8">
           <div className="flex items-center gap-2">
             <div className="grid h-6 w-6 place-items-center rounded-full bg-[#1c1b2b] text-white text-[10px]">
-              ✦
+              <Graph size={12} weight="bold" />
             </div>
-            <span className="font-display font-black text-base text-[#1c1b2b]">trizpyy</span>
+            <span className="font-display font-black text-base text-[#1c1b2b]">Research Map</span>
           </div>
-          <p>© 2026 trizpyy · All rights reserved.</p>
+          <p>© 2026 Research Map · Visual Research & Browser Tab Manager · All rights reserved.</p>
           <div className="flex gap-4">
             <Link href="/login" className="hover:text-[#1c1b2b]">Login</Link>
             <Link href="/workspaces" className="hover:text-[#1c1b2b]">Workspaces</Link>

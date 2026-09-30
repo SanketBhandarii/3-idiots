@@ -6,3 +6,25 @@ design.md
 allaboutourproject.md
 allaboutourproject.html
 allaboutourproject.*
+build_site.py
+
+# Secrets — never commit real env files (only *.env.example)
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+
+# Build and tool output
+node_modules/
+extension/.output/
+extension/.wxt/
+agent/.venv/
+__pycache__/
+*.pyc
+api/bin/
+*.exe
+
+# Local run logs
+*.log

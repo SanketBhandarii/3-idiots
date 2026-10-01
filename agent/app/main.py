@@ -1,7 +1,9 @@
 """Private AI service. Only Go calls it (X-Internal-Key). Stateless: no database. Groq + local fastembed."""
 from __future__ import annotations
 
-import hmac, json, os, re, threading, time
+import hmac, json, logging, os, re, threading, time
+
+import httpx
 from pathlib import Path
 from typing import Literal
 
@@ -10,10 +12,11 @@ from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field, ValidationError
 
 load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+from app.providers import AllProvidersFailed, build_router  # noqa: E402  (after .env is loaded)
+
+logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO").upper(), format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger("agent")
 KEY = os.environ.get("AGENT_INTERNAL_KEY", "")
-MODELS = {"understand": os.environ.get("AGENT1_MODEL", "openai/gpt-oss-20b"),
-          "place": os.environ.get("AGENT2_MODEL", "openai/gpt-oss-120b"),
-          "report": os.environ.get("REPORT_MODEL", "openai/gpt-oss-120b")}
 app = FastAPI(docs_url=None, redoc_url=None)
 
 SAFETY = ("Use only the information given. If unsure, lower the confidence. Never invent facts, sources, numbers or quotes. "
@@ -46,7 +49,8 @@ def auth(x_internal_key: str = Header(default="")):
 _lock, _calls = threading.Lock(), []
 
 
-def throttle(rpm=int(os.environ.get("GROQ_MAX_RPM", "25"))):
+def throttle(rpm=int(os.environ.get("AI_MAX_RPM", os.environ.get("GROQ_MAX_RPM", "60")))):
+    """Global request budget across both pools (protects free-tier limits)."""
     while True:
         with _lock:
             now = time.time()
@@ -57,29 +61,26 @@ def throttle(rpm=int(os.environ.get("GROQ_MAX_RPM", "25"))):
         time.sleep(max(wait, 0.5))
 
 
-_groq = None
+ROUTER = build_router()
 
 
-def llm(kind: str, task: str, user: str, schema: type[BaseModel], max_tokens=900) -> BaseModel:
-    global _groq
-    from groq import APIError, Groq, RateLimitError
-    if _groq is None:
-        _groq = Groq(api_key=os.environ["GROQ_API_KEY"], timeout=45, max_retries=2)
-    for _ in range(2):
-        throttle()
-        try:
-            r = _groq.chat.completions.create(model=MODELS[kind], temperature=0.2, max_tokens=max_tokens + 1500,
-                                              reasoning_effort="low",
-                                              response_format={"type": "json_object"},
-                                              messages=[{"role": "system", "content": SAFETY + "\n" + P[task]}, {"role": "user", "content": user}])
-            return schema.model_validate(json.loads(r.choices[0].message.content or "{}"))
-        except RateLimitError:
-            raise HTTPException(429, "rate limited")
-        except (json.JSONDecodeError, ValidationError):
-            continue
-        except APIError as e:  # model/network problems → caller uses its safe fallback
-            raise HTTPException(502, f"groq error: {type(e).__name__}")
-    raise HTTPException(502, "invalid model output")
+def llm(task: str, user: str, schema: type[BaseModel], max_tokens=900) -> BaseModel:
+    """Routes to Gemini/Groq key pools. 429 → caller (Go) retries later; other failures → 502 (caller falls back)."""
+    throttle()
+    log.info("[AI] %s started", TASK_LABEL.get(task, task))
+    try:
+        out, prov, model = ROUTER.complete_json(task, SAFETY + "\n" + P[task], user, max_tokens, schema.model_validate)
+    except AllProvidersFailed as e:
+        log.warning("[AI] %s failed: %s", TASK_LABEL.get(task, task), e)
+        if e.rate_limited:
+            raise HTTPException(429, "rate limited", headers={"Retry-After": str(int(e.retry_after) + 1)})
+        raise HTTPException(502, "ai unavailable")
+    log.info("[AI] %s completed via %s (%s)", TASK_LABEL.get(task, task), prov, model)
+    return out
+
+
+TASK_LABEL = {"understand": "Agent 1", "place": "Agent 2", "conflicts": "Conflict check", "report": "Session report",
+              "radar": "Research radar", "methodology": "Methodology checklist"}
 
 
 _emb, _elock = None, threading.Lock()
@@ -111,18 +112,55 @@ class Understanding(BaseModel):
     questions_answered: list[str] = []
 
 
-def fetch(url: str) -> str:
+def _public_host(url: str) -> bool:
+    """SSRF guard: only fetch http(s) URLs whose host resolves exclusively to public (global) IPs."""
+    import ipaddress, socket
+    from urllib.parse import urlparse
+    p = urlparse(url)
+    if p.scheme not in ("http", "https") or not p.hostname:
+        return False
     try:
-        if url.lower().split("?")[0].endswith(".pdf"):
-            import io, urllib.request
+        infos = socket.getaddrinfo(p.hostname, p.port or (443 if p.scheme == "https" else 80), proto=socket.IPPROTO_TCP)
+    except (OSError, ValueError):
+        return False
+    return bool(infos) and all(ipaddress.ip_address(i[4][0].split("%")[0]).is_global for i in infos)
+
+
+def safe_get(url: str, max_bytes: int = 15 << 20) -> tuple[bytes, str]:
+    """GET with manual redirects; every hop is re-checked by _public_host (blocks localhost, private, link-local, metadata IPs)."""
+    from urllib.parse import urljoin
+    with httpx.Client(follow_redirects=False, timeout=20, headers={"User-Agent": "ResearchMap/1.0"}) as c:
+        for _ in range(5):
+            if not _public_host(url):
+                raise ValueError("blocked non-public address")
+            with c.stream("GET", url) as r:
+                if r.is_redirect:
+                    url = urljoin(url, r.headers.get("location", ""))
+                    continue
+                r.raise_for_status()
+                buf = bytearray()
+                for chunk in r.iter_bytes():
+                    buf += chunk
+                    if len(buf) > max_bytes:
+                        break
+                return bytes(buf), r.headers.get("content-type", "")
+    raise ValueError("too many redirects")
+
+
+def fetch(url: str) -> tuple[str, str]:
+    """Returns (text, title). Empty strings when the URL is blocked or cannot be read."""
+    try:
+        body, ctype = safe_get(url)
+        if "pdf" in ctype or url.lower().split("?")[0].endswith(".pdf"):
+            import io
             from pypdf import PdfReader
-            with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "ResearchMap"}), timeout=20) as r:
-                return "\n".join((p.extract_text() or "") for p in PdfReader(io.BytesIO(r.read(15 << 20))).pages[:30])[:20000]
+            return "\n".join((p.extract_text() or "") for p in PdfReader(io.BytesIO(body)).pages[:30])[:20000], ""
         import trafilatura
-        d = trafilatura.fetch_url(url)
-        return (trafilatura.extract(d) or "")[:20000] if d else ""
+        html = body.decode("utf-8", errors="replace")
+        meta = trafilatura.extract_metadata(html)
+        return (trafilatura.extract(html) or "")[:20000], ((meta.title if meta else "") or "")[:500]
     except Exception:
-        return ""
+        return "", ""
 
 
 norm = lambda s: re.sub(r"\s+", " ", s).strip().lower()
@@ -130,13 +168,14 @@ norm = lambda s: re.sub(r"\s+", " ", s).strip().lower()
 
 @app.post("/v1/understand", dependencies=[Depends(auth)])
 def understand(inp: dict):
-    text, fetched = inp.get("content_text") or "", ""
+    text, fetched, fetched_title = inp.get("content_text") or "", "", ""
     if not text.strip():
-        text = fetched = fetch(inp["url"])
+        text, fetched_title = fetch(inp["url"])
+        fetched = text
     user = f"URL: {inp['url']}\nTitle: {inp.get('title','')}\n<page_content>\n{text[:3000]}\n</page_content>"
     fallback = False
     try:
-        u = llm("understand", "understand", user, Understanding, 700)
+        u = llm("understand", user, Understanding, 700)
     except HTTPException as e:
         if e.status_code == 429:
             raise
@@ -146,7 +185,7 @@ def understand(inp: dict):
     u.topics = [t.strip()[:60] for t in u.topics if t.strip()][:6]
     vecs = embed([f"{inp.get('title','')}. {u.summary} {' '.join(u.topics)}"] + [c.text for c in claims])
     return {**u.model_dump(exclude={"claims"}), "claims": [{**c.model_dump(), "embedding": vecs[i + 1]} for i, c in enumerate(claims)],
-            "embedding": vecs[0], "fallback": fallback, "fetched_text": fetched}
+            "embedding": vecs[0], "fallback": fallback, "fetched_text": fetched, "fetched_title": fetched_title}
 
 
 class Edge(BaseModel):
@@ -168,7 +207,7 @@ class Placement(BaseModel):
 def place(inp: dict):
     cands = [{k: c.get(k) for k in ("id", "type", "title", "summary", "topics", "is_opener")} for c in (inp.get("candidates") or [])[:8]]
     try:
-        out = llm("place", "place", json.dumps({"new_page": inp.get("page"), "candidates": cands, "existing_topics": (inp.get("existing_topics") or [])[:30]}), Placement)
+        out = llm("place", json.dumps({"new_page": inp.get("page"), "candidates": cands, "existing_topics": (inp.get("existing_topics") or [])[:30]}), Placement)
     except HTTPException as e:
         if e.status_code == 429:
             raise
@@ -195,7 +234,7 @@ class COut(BaseModel):
 @app.post("/v1/conflicts/check", dependencies=[Depends(auth)])
 def conflicts(inp: dict):
     pairs = [{"index": i, **p} for i, p in enumerate((inp.get("pairs") or [])[:10])]
-    return llm("place", "conflicts", json.dumps({"pairs": pairs}), COut, 1400).model_dump()
+    return llm("conflicts", json.dumps({"pairs": pairs}), COut, 1400).model_dump()
 
 
 class Item(BaseModel):
@@ -209,7 +248,7 @@ class Checklist(BaseModel):
 
 @app.post("/v1/conflicts/methodology", dependencies=[Depends(auth)])
 def methodology(inp: dict):
-    return {"checklist": [c.model_dump() for c in llm("place", "methodology", json.dumps(inp)[:6000], Checklist, 600).checklist[:8]]}
+    return {"checklist": [c.model_dump() for c in llm("methodology", json.dumps(inp)[:6000], Checklist, 600).checklist[:8]]}
 
 
 class Searches(BaseModel):
@@ -218,7 +257,7 @@ class Searches(BaseModel):
 
 @app.post("/v1/radar/suggest", dependencies=[Depends(auth)])
 def radar(inp: dict):
-    return {"suggested_searches": [s[:100] for s in llm("understand", "radar", json.dumps(inp), Searches, 200).suggested_searches][:3]}
+    return {"suggested_searches": [s[:100] for s in llm("radar", json.dumps(inp), Searches, 200).suggested_searches][:3]}
 
 
 class KP(BaseModel):
@@ -233,7 +272,7 @@ class Report(BaseModel):
 
 @app.post("/v1/report", dependencies=[Depends(auth)])
 def report(inp: dict):
-    return llm("report", "report", json.dumps(inp, default=str)[:14000], Report, 1100).model_dump()
+    return llm("report", json.dumps(inp, default=str)[:14000], Report, 1100).model_dump()
 
 
 @app.post("/v1/embed", dependencies=[Depends(auth)])
@@ -258,4 +297,7 @@ def cluster(inp: dict):
 
 @app.get("/health")
 def health():
-    return {"ok": True, "models": MODELS, "groq_key": bool(os.environ.get("GROQ_API_KEY"))}
+    st = ROUTER.status()
+    return {"ok": True, "ai_available": any(p["keys_configured"] for p in st.values()),
+            "providers": st, "models": {t: m for t, m in ROUTER.models.items()},
+            "routing": {t: ROUTER.order(t) for t in ROUTER.models}}

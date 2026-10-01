@@ -224,11 +224,11 @@ func (p *Pipeline) process(ctx context.Context, nodeID string) {
 	a := p.a
 	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
 	defer cancel()
-	var wsID, pageID, title, url, content, domain string
+	var wsID, pageID, title, url, content, domain, via string
 	var whyRaw []byte
-	err := a.db.QueryRow(ctx, `SELECT n.workspace_id, n.page_id, n.title, p.url, p.content_text, p.domain, n.why_opened
+	err := a.db.QueryRow(ctx, `SELECT n.workspace_id, n.page_id, n.title, p.url, p.content_text, p.domain, n.why_opened, n.created_via
 		FROM nodes n JOIN pages p ON p.id=n.page_id WHERE n.id=$1 AND n.deleted_at IS NULL`, nodeID).
-		Scan(&wsID, &pageID, &title, &url, &content, &domain, &whyRaw)
+		Scan(&wsID, &pageID, &title, &url, &content, &domain, &whyRaw, &via)
 	if err != nil {
 		return
 	}
@@ -240,7 +240,8 @@ func (p *Pipeline) process(ctx context.Context, nodeID string) {
 	var u understandOut
 	slog.Info("[AI] Agent 1 started", "workspace_id", wsID, "node_id", nodeID, "page_id", pageID, "content_chars", len(content))
 	for attempt := 0; attempt < 3; attempt++ {
-		err = a.agent.post(ctx, "/v1/understand", gin.H{"url": url, "title": title, "domain": domain, "content_text": content}, &u)
+		err = a.agent.post(ctx, "/v1/understand", gin.H{"url": url, "title": title, "domain": domain, "content_text": content,
+			"fetch_if_short": via == "mcp"}, &u) // AI assistants send snippets: read the full public page
 		var ae *agentError
 		if err == nil || !(errors.As(err, &ae) && ae.Status == 429) {
 			break
@@ -271,7 +272,7 @@ func (p *Pipeline) process(ctx context.Context, nodeID string) {
 	if len(u.Embedding) > 0 {
 		slog.Info("[GO] embedding generated", "node_id", nodeID, "dims", len(u.Embedding))
 	}
-	if u.FetchedText != "" && content == "" {
+	if len(u.FetchedText) > len(content) { // the agent read the full page (no text, or only a snippet, was sent)
 		_, _ = a.db.Exec(ctx, `UPDATE pages SET content_text=$2, word_count=$3 WHERE id=$1`, pageID, truncateRunes(u.FetchedText, 20000), len(strings.Fields(u.FetchedText)))
 	}
 	// Sources added by URL only (MCP add_source) start titled with the bare domain; use the real page title.

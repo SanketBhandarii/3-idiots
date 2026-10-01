@@ -161,7 +161,7 @@ export const QuestionNode = memo(function QuestionNode({ data, selected }: P) {
         <div className="p-3.5">
           <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-[0.12em] text-sky-deep">
             <Question size={13} weight="fill" /> Question
-            {node.body && node.body !== "manual" && <span className="normal-case tracking-normal text-muted">· from {node.body} search</span>}
+            {node.body && node.body !== "manual" && node.created_via !== "mcp" && <span className="normal-case tracking-normal text-muted">· from {node.body} search</span>}
           </div>
           <p className="mt-1.5 text-[14px] font-bold leading-snug text-ink">{node.title}</p>
           <div className="mt-2 flex items-center gap-2 text-[11px] font-bold">

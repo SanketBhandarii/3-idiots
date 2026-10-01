@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -44,9 +46,19 @@ func (a *App) mcpWrite(ctx context.Context, wsID, userID string) error {
 	return nil
 }
 
+// agentBranches caches workspace id → AI Agent branch id (created with the workspace and never changed), which saves a
+// database round trip on every MCP write.
+var agentBranches sync.Map
+
 func (a *App) agentBranch(ctx context.Context, wsID string) string {
+	if v, ok := agentBranches.Load(wsID); ok {
+		return v.(string)
+	}
 	var id string
 	_ = a.db.QueryRow(ctx, `SELECT id FROM branches WHERE workspace_id=$1 AND kind='agent'`, wsID).Scan(&id)
+	if id != "" {
+		agentBranches.Store(wsID, id)
+	}
 	return id
 }
 
@@ -140,24 +152,191 @@ func (a *App) mcpCreateNode(ctx context.Context, u *User, wsID, typ, title, body
 		slog.Warn("[MCP] create node failed", "type", typ, "err", err)
 		return "", errors.New("could not save the node")
 	}
-	a.logEvent(ctx, wsID, &u.ID, typ+"_added", gin.H{"node_id": id, "title": title, "via": "mcp", "client": client})
-	a.touch(ctx, wsID)
 	a.publishNode(ctx, "node.created", id, &u.ID)
+	go func() { // bookkeeping off the response path (the database is remote)
+		bg, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		a.logEvent(bg, wsID, &u.ID, typ+"_added", gin.H{"node_id": id, "title": title, "via": "mcp", "client": client})
+		a.touch(bg, wsID)
+	}()
 	return id, nil
 }
 
 func (a *App) mcpServer(u *User) *mcp.Server {
-	s := mcp.NewServer(&mcp.Implementation{Name: "research-map", Version: "1.1.0"}, &mcp.ServerOptions{
-		Instructions: "Research Map stores research as a visual graph. Workflow: list_workspaces → search_workspace / get_graph_outline to see what exists → " +
-			"add_question for the question you are researching → add_source for each web page you used (pass `question` and the page text in `content`) → " +
-			"add_finding for conclusions, citing source node ids → link_nodes to explain relationships. Everything you add lands in the " +
-			"workspace's AI Agent branch for the user to review. This server does not search the web; use your own search tool and send the results here.",
-	})
+	s := mcp.NewServer(&mcp.Implementation{Name: "research-map", Version: "1.2.0"}, &mcp.ServerOptions{Instructions: mcpInstructions,
+		// Ping idle sessions: Node-based clients (Gemini CLI) drop a stream with no data for 5 min and report "MCP ERROR".
+		KeepAlive: 30 * time.Second, KeepAliveFailureThreshold: 3})
+
+	// Each MCP session remembers its research workspace, so after start_research every tool works without workspace_id.
+	// It also caches lookups that rarely change (access checks for 30 s, the agent session, question nodes, blocklist):
+	// the database is remote, and an assistant adding sources while it researches should see each call return fast.
+	var mu sync.Mutex
+	current := ""
+	checked := map[string]time.Time{} // wsID|w or wsID|r → access verified until
+	agentSessions := map[string]*Session{}
+	questions := map[string]string{} // wsID|lower(question) → node id
+	blocklists := map[string][]string{}
+	setCurrent := func(id string) { mu.Lock(); current = id; mu.Unlock() }
+	agentSession := func(ctx context.Context, wsID, client string) *Session {
+		mu.Lock()
+		se := agentSessions[wsID]
+		mu.Unlock()
+		if se != nil {
+			return se
+		}
+		se, err := a.mcpAgentSession(ctx, u, wsID, client)
+		if err != nil {
+			return nil
+		}
+		mu.Lock()
+		agentSessions[wsID] = se
+		mu.Unlock()
+		return se
+	}
+	question := func(ctx context.Context, wsID, q, client string) (string, bool, error) {
+		key := wsID + "|" + strings.ToLower(q)
+		mu.Lock()
+		id := questions[key]
+		mu.Unlock()
+		if id != "" {
+			return id, false, nil
+		}
+		id, isNew, err := a.mcpQuestion(ctx, u, wsID, q, client)
+		if err == nil {
+			mu.Lock()
+			questions[key] = id
+			mu.Unlock()
+		}
+		return id, isNew, err
+	}
+	isBlocked := func(ctx context.Context, wsID, domain string) bool {
+		mu.Lock()
+		list, ok := blocklists[wsID]
+		mu.Unlock()
+		if !ok {
+			list = a.blocklist(ctx, wsID)
+			mu.Lock()
+			blocklists[wsID] = list
+			mu.Unlock()
+		}
+		return blockedIn(list, domain)
+	}
+	// ws resolves the workspace a tool acts on: the explicit id, else this session's workspace, else the workspace the
+	// user opened most recently (what they are probably looking at), else (for writes) a fresh "AI research" workspace.
+	ws := func(ctx context.Context, id string, write bool) (string, error) {
+		mu.Lock()
+		cur := current
+		mu.Unlock()
+		if id = strings.TrimSpace(id); id == "" {
+			id = cur
+		}
+		key := id + "|r"
+		if write {
+			key = id + "|w"
+		}
+		mu.Lock()
+		fresh := id != "" && time.Now().Before(checked[key])
+		mu.Unlock()
+		if fresh {
+			setCurrent(id)
+			return id, nil
+		}
+		if id == "" {
+			_ = a.db.QueryRow(ctx, `SELECT w.id FROM workspaces w JOIN workspace_members m ON m.workspace_id=w.id
+				WHERE m.user_id=$1 AND w.deleted_at IS NULL AND ($2 OR m.role IN ('owner','editor'))
+				ORDER BY coalesce(m.last_opened_at, w.updated_at) DESC LIMIT 1`, u.ID, !write).Scan(&id)
+		}
+		if id == "" {
+			if !write {
+				return "", errors.New("you have no workspaces yet; call start_research first")
+			}
+			nid, isNew, err := a.mcpStartWorkspace(ctx, u, "AI research", "MCP")
+			if err != nil {
+				return "", err
+			}
+			a.announceResearch(ctx, u, nid, isNew, "AI research", "MCP")
+			id = nid
+		}
+		var err error
+		if write {
+			err = a.mcpWrite(ctx, id, u.ID)
+		} else {
+			_, err = a.mcpRole(ctx, id, u.ID)
+		}
+		if err != nil {
+			return "", err
+		}
+		mu.Lock()
+		current = id
+		checked[key] = time.Now().Add(30 * time.Second)
+		if write { // write access implies read access
+			checked[id+"|r"] = checked[key]
+		}
+		mu.Unlock()
+		return id, nil
+	}
 	type wsIn struct {
-		WorkspaceID string `json:"workspace_id" jsonschema:"workspace id from list_workspaces"`
+		WorkspaceID string `json:"workspace_id,omitempty" jsonschema:"optional; defaults to the workspace from start_research"`
 	}
 
-	mcp.AddTool(s, &mcp.Tool{Name: "list_workspaces", Description: "List research workspaces you can access (id, title, your role)."},
+	addTool(s, &mcp.Tool{Name: "start_research", Description: "CALL THIS FIRST whenever the user asks you to research, investigate, compare or " +
+		"learn about any topic. Creates a new research workspace named after the topic (or reuses one with the same name), adds the topic " +
+		"as a Question node and opens it live in the user's Research Map app. Returns workspace_id; every other tool then defaults to it. " +
+		"After this: search the web with your own tool and call add_source for EVERY useful page as soon as you find it (do not wait until the end), " +
+		"then add_finding for your conclusions."},
+		func(ctx context.Context, req *mcp.CallToolRequest, in struct {
+			Topic          string `json:"topic" jsonschema:"the research topic or question, e.g. 'Best electric car models in 2026'"`
+			WorkspaceTitle string `json:"workspace_title,omitempty" jsonschema:"optional short workspace name; defaults to the topic"`
+			WorkspaceID    string `json:"workspace_id,omitempty" jsonschema:"optional: research inside this existing workspace instead of creating one"`
+			SeedSources    *bool  `json:"seed_sources,omitempty" jsonschema:"optional, default true: the server also adds a few Wikipedia background sources"`
+		}) (*mcp.CallToolResult, out, error) {
+			topic := truncateRunes(strings.TrimSpace(in.Topic), 300)
+			if topic == "" {
+				return nil, out{}, errors.New("topic is empty")
+			}
+			client := clientName(req)
+			wsID, isNew := strings.TrimSpace(in.WorkspaceID), false
+			if wsID == "" {
+				title := strings.TrimSpace(in.WorkspaceTitle)
+				if title == "" {
+					title = topic
+				}
+				var err error
+				if wsID, isNew, err = a.mcpStartWorkspace(ctx, u, truncateRunes(title, 120), client); err != nil {
+					return nil, out{}, err
+				}
+			}
+			if _, err := ws(ctx, wsID, true); err != nil {
+				return nil, out{}, err
+			}
+			// Open the workspace in the user's browser right away; the question node streams in over its socket.
+			go a.announceResearch(context.Background(), u, wsID, isNew, topic, client)
+			qid, _, err := question(ctx, wsID, topic, client)
+			if err != nil {
+				return nil, out{}, err
+			}
+			se := agentSession(ctx, wsID, client)
+			url := a.appURL() + "/w/" + wsID
+			// Seed background sources from Wikipedia so the map fills even when the assistant's own web search is
+			// rate-limited (common on free tiers). Only for a workspace without sources yet; runs after we answer.
+			seeding := in.SeedSources == nil || *in.SeedSources
+			if seeding {
+				var pages int
+				_ = a.db.QueryRow(ctx, `SELECT count(*) FROM nodes WHERE workspace_id=$1 AND type='page' AND deleted_at IS NULL`, wsID).Scan(&pages)
+				seeding = pages == 0
+			}
+			if seeding {
+				go a.seedWikipedia(u, wsID, topic, se)
+			}
+			return ok(gin.H{"workspace_id": wsID, "workspace_url": url, "created": isNew, "question_node_id": qid, "background_sources": seeding,
+				"next": "Search the web now. For each useful page call add_source (url, title, content = key text, question = the search query). " +
+					"Then add_finding (statement, details, source_node_ids). If your web search fails, call get_graph_outline: the server adds " +
+					"Wikipedia background sources in a few seconds, and you can cite their ids in add_finding. workspace_id is optional from here on. " +
+					"Tell the user they can watch live at " + url})
+		})
+
+	addTool(s, &mcp.Tool{Name: "list_workspaces", Description: "List research workspaces you can access (id, title, your role). " +
+		"Not required before writing: start_research creates/selects a workspace, and tools without workspace_id use the current one."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, out, error) {
 			rows, err := a.db.Query(ctx, `SELECT w.id, w.title, m.role FROM workspaces w JOIN workspace_members m ON m.workspace_id=w.id
 				WHERE m.user_id=$1 AND w.deleted_at IS NULL ORDER BY w.updated_at DESC`, u.ID)
@@ -175,14 +354,16 @@ func (a *App) mcpServer(u *User) *mcp.Server {
 			return ok(list)
 		})
 
-	mcp.AddTool(s, &mcp.Tool{Name: "search_workspace", Description: "Hybrid search (full text + fuzzy + meaning) over pages, notes, highlights, questions, findings and topics."},
+	addTool(s, &mcp.Tool{Name: "search_workspace", Description: "Hybrid search (full text + fuzzy + meaning) over pages, notes, highlights, questions, findings and topics."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
-			WorkspaceID string `json:"workspace_id"`
+			WorkspaceID string `json:"workspace_id,omitempty" jsonschema:"optional; defaults to the current research workspace"`
 			Query       string `json:"query"`
 		}) (*mcp.CallToolResult, out, error) {
-			if _, err := a.mcpRole(ctx, in.WorkspaceID, u.ID); err != nil {
+			wsID, err := ws(ctx, in.WorkspaceID, false)
+			if err != nil {
 				return nil, out{}, err
 			}
+			in.WorkspaceID = wsID
 			q := truncateRunes(strings.TrimSpace(in.Query), 300)
 			if q == "" {
 				return nil, out{}, errors.New("query is empty")
@@ -194,7 +375,7 @@ func (a *App) mcpServer(u *User) *mcp.Server {
 			return ok(res)
 		})
 
-	mcp.AddTool(s, &mcp.Tool{Name: "get_node", Description: "Get a node with its page summary, notes and explained connections."},
+	addTool(s, &mcp.Tool{Name: "get_node", Description: "Get a node with its page summary, notes and explained connections."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in struct {
 			NodeID string `json:"node_id"`
 		}) (*mcp.CallToolResult, out, error) {
@@ -213,11 +394,13 @@ func (a *App) mcpServer(u *User) *mcp.Server {
 			return ok(res)
 		})
 
-	mcp.AddTool(s, &mcp.Tool{Name: "get_graph_outline", Description: "Compact outline: topic groups and the pages, questions and findings inside them, with node ids."},
+	addTool(s, &mcp.Tool{Name: "get_graph_outline", Description: "Compact outline: topic groups and the pages, questions and findings inside them, with node ids."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in wsIn) (*mcp.CallToolResult, out, error) {
-			if _, err := a.mcpRole(ctx, in.WorkspaceID, u.ID); err != nil {
+			wsID, err := ws(ctx, in.WorkspaceID, false)
+			if err != nil {
 				return nil, out{}, err
 			}
+			in.WorkspaceID = wsID
 			rows, err := a.db.Query(ctx, `SELECT coalesce(t.title,'Unsorted'), n.id, n.type, n.title, b.kind FROM nodes n LEFT JOIN nodes t ON t.id=n.parent_id
 				JOIN branches b ON b.id=n.branch_id WHERE n.workspace_id=$1 AND n.deleted_at IS NULL AND n.type<>'topic' ORDER BY 1, n.created_at`, in.WorkspaceID)
 			if err != nil {
@@ -246,64 +429,66 @@ func (a *App) mcpServer(u *User) *mcp.Server {
 			return ok(b.String())
 		})
 
-	mcp.AddTool(s, &mcp.Tool{Name: "add_question", Description: "Record the research question or search query you are investigating. It becomes a Question node; pass the same text as `question` to add_source so sources are linked to it."},
+	addTool(s, &mcp.Tool{Name: "add_question", Description: "Record a sub-question or search query you are investigating (e.g. each web search you run). " +
+		"It becomes a Question node; pass the same text as `question` to add_source so sources are linked to it."},
 		func(ctx context.Context, req *mcp.CallToolRequest, in struct {
-			WorkspaceID string `json:"workspace_id"`
+			WorkspaceID string `json:"workspace_id,omitempty" jsonschema:"optional; defaults to the current research workspace"`
 			Question    string `json:"question"`
 		}) (*mcp.CallToolResult, out, error) {
-			if err := a.mcpWrite(ctx, in.WorkspaceID, u.ID); err != nil {
+			wsID, err := ws(ctx, in.WorkspaceID, true)
+			if err != nil {
 				return nil, out{}, err
 			}
+			in.WorkspaceID = wsID
 			q := truncateRunes(strings.TrimSpace(in.Question), 300)
 			if q == "" {
 				return nil, out{}, errors.New("question is empty")
 			}
-			id, isNew, err := a.mcpQuestion(ctx, u, in.WorkspaceID, q, clientName(req))
+			id, isNew, err := question(ctx, in.WorkspaceID, q, clientName(req))
 			if err != nil {
 				return nil, out{}, err
 			}
 			return ok(gin.H{"node_id": id, "is_new": isNew})
 		})
 
-	mcp.AddTool(s, &mcp.Tool{Name: "add_source", Description: "Add a web page you used as a source. Pass the page text in `content` when you have it (otherwise the server downloads the public page). " +
-		"It runs the normal AI pipeline (summary, topics, claims, connections, topic group, conflict check) and lands in the AI Agent branch."},
+	addTool(s, &mcp.Tool{Name: "add_source", Description: "Add a web page you found as a source. Call it right away for every useful page while you research, " +
+		"so the user sees the map grow live. Pass the key page text in `content` when you have it (otherwise the server downloads the public page). " +
+		"Runs the AI pipeline (summary, topics, claims, connections, topic group, conflict check) and lands in the AI Agent branch. Returns node_id for add_finding."},
 		func(ctx context.Context, req *mcp.CallToolRequest, in struct {
-			WorkspaceID string `json:"workspace_id"`
+			WorkspaceID string `json:"workspace_id,omitempty" jsonschema:"optional; defaults to the current research workspace"`
 			URL         string `json:"url"`
 			Title       string `json:"title,omitempty"`
 			Content     string `json:"content,omitempty" jsonschema:"page text; if empty the server fetches the public page"`
 			Note        string `json:"note,omitempty" jsonschema:"why this source matters"`
 			Question    string `json:"question,omitempty" jsonschema:"the research question / search query that led to this source"`
 		}) (*mcp.CallToolResult, out, error) {
-			if err := a.mcpWrite(ctx, in.WorkspaceID, u.ID); err != nil {
+			wsID, err := ws(ctx, in.WorkspaceID, true)
+			if err != nil {
 				return nil, out{}, err
 			}
+			in.WorkspaceID = wsID
 			if !isHTTPURL(in.URL) || len(in.URL) > 2048 {
 				return nil, out{}, errors.New("url must be an http(s) URL")
 			}
-			if a.blocked(ctx, in.WorkspaceID, domainOf(in.URL)) {
+			if isBlocked(ctx, in.WorkspaceID, domainOf(in.URL)) {
 				return nil, out{}, errors.New(domainOf(in.URL) + " is on this workspace's blocklist")
 			}
 			client := clientName(req)
-			b := capturePageReq{URL: in.URL, Title: in.Title, ContentText: in.Content, Transition: "manual", WorkspaceID: in.WorkspaceID}
+			b := capturePageReq{URL: in.URL, Title: in.Title, ContentText: in.Content, Transition: "manual", WorkspaceID: in.WorkspaceID, ClientName: client}
 			if q := truncateRunes(strings.TrimSpace(in.Question), 300); q != "" {
-				if _, _, err := a.mcpQuestion(ctx, u, in.WorkspaceID, q, client); err != nil {
+				if _, _, err := question(ctx, in.WorkspaceID, q, client); err != nil {
 					return nil, out{}, err
 				}
 				b.SearchQuery = &q // ingestPage links the page to the Question node; Agent 2 can add "answers"
 			}
-			session, _ := a.mcpAgentSession(ctx, u, in.WorkspaceID, client)
-			res, err := a.ingestPage(ctx, u, b, session, "mcp")
+			res, err := a.ingestPage(ctx, u, b, agentSession(ctx, in.WorkspaceID, client), "mcp")
 			if err != nil {
 				slog.Warn("[MCP] add_source failed", "err", err)
 				return nil, out{}, errors.New("could not add the source")
 			}
 			nodeID := res["node_id"].(string)
-			if tag, _ := a.db.Exec(ctx, `UPDATE nodes SET client_name=$2 WHERE id=$1 AND created_via='mcp' AND client_name IS NULL`, nodeID, client); tag.RowsAffected() > 0 {
-				a.publishNode(ctx, "node.updated", nodeID, &u.ID)
-			}
 			if res["is_new"] == true {
-				a.logEvent(ctx, in.WorkspaceID, &u.ID, "source_added", gin.H{"node_id": nodeID, "url": in.URL, "via": "mcp", "client": client})
+				go a.logEvent(context.Background(), in.WorkspaceID, &u.ID, "source_added", gin.H{"node_id": nodeID, "url": in.URL, "via": "mcp", "client": client})
 			}
 			if in.Note != "" {
 				if _, err := a.mcpAnnotate(ctx, u, in.WorkspaceID, nodeID, in.Note); err != nil {
@@ -315,10 +500,10 @@ func (a *App) mcpServer(u *User) *mcp.Server {
 			return ok(res)
 		})
 
-	mcp.AddTool(s, &mcp.Tool{Name: "add_note", Description: "Add a note to a node (node_id), or a free-standing Note node in the workspace (workspace_id)."},
+	addTool(s, &mcp.Tool{Name: "add_note", Description: "Add a note to a node (node_id), or a free-standing Note node in the workspace (workspace_id)."},
 		func(ctx context.Context, req *mcp.CallToolRequest, in struct {
 			NodeID      string `json:"node_id,omitempty"`
-			WorkspaceID string `json:"workspace_id,omitempty"`
+			WorkspaceID string `json:"workspace_id,omitempty" jsonschema:"optional; defaults to the current research workspace"`
 			Text        string `json:"text"`
 		}) (*mcp.CallToolResult, out, error) {
 			text := truncateRunes(strings.TrimSpace(in.Text), 5000)
@@ -336,12 +521,11 @@ func (a *App) mcpServer(u *User) *mcp.Server {
 				}
 				return ok(gin.H{"annotation_id": id})
 			}
-			if in.WorkspaceID == "" {
-				return nil, out{}, errors.New("give node_id or workspace_id")
-			}
-			if err := a.mcpWrite(ctx, in.WorkspaceID, u.ID); err != nil {
+			wsID, err := ws(ctx, in.WorkspaceID, true)
+			if err != nil {
 				return nil, out{}, err
 			}
+			in.WorkspaceID = wsID
 			title := truncateRunes(strings.SplitN(text, "\n", 2)[0], 120)
 			id, err := a.mcpCreateNode(ctx, u, in.WorkspaceID, "note", title, text, clientName(req), nil)
 			if err != nil {
@@ -350,44 +534,87 @@ func (a *App) mcpServer(u *User) *mcp.Server {
 			return ok(gin.H{"node_id": id})
 		})
 
-	mcp.AddTool(s, &mcp.Tool{Name: "add_finding", Description: "Add a Finding (a conclusion) supported by existing source node ids. Each source gets a 'supports' edge to the finding."},
+	addTool(s, &mcp.Tool{Name: "add_finding", Description: "Add a Finding (a conclusion of your research) supported by source node ids from add_source. " +
+		"Each source gets a 'supports' edge to the finding. Put the explanation / evidence in `details`."},
 		func(ctx context.Context, req *mcp.CallToolRequest, in struct {
-			WorkspaceID   string   `json:"workspace_id"`
-			Statement     string   `json:"statement"`
-			SourceNodeIDs []string `json:"source_node_ids"`
+			WorkspaceID   string   `json:"workspace_id,omitempty" jsonschema:"optional; defaults to the current research workspace"`
+			Statement     string   `json:"statement" jsonschema:"the conclusion in one sentence"`
+			Details       string   `json:"details,omitempty" jsonschema:"explanation and evidence for the conclusion (a few sentences)"`
+			SourceNodeIDs []string `json:"source_node_ids,omitempty" jsonschema:"node_id values returned by add_source"`
 		}) (*mcp.CallToolResult, out, error) {
-			if err := a.mcpWrite(ctx, in.WorkspaceID, u.ID); err != nil {
+			wsID, err := ws(ctx, in.WorkspaceID, true)
+			if err != nil {
 				return nil, out{}, err
 			}
+			in.WorkspaceID = wsID
 			st := truncateRunes(strings.TrimSpace(in.Statement), 500)
 			if st == "" {
 				return nil, out{}, errors.New("statement is empty")
 			}
 			if len(in.SourceNodeIDs) > 20 {
-				return nil, out{}, errors.New("at most 20 source_node_ids")
+				in.SourceNodeIDs = in.SourceNodeIDs[:20]
 			}
-			for _, sid := range in.SourceNodeIDs { // never trust ids from the client: all must be live nodes of this workspace
-				var okNode bool
-				_ = a.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM nodes WHERE id=$1 AND workspace_id=$2 AND deleted_at IS NULL)`, sid, in.WorkspaceID).Scan(&okNode)
-				if !okNode {
-					return nil, out{}, fmt.Errorf("source node %q is not in this workspace", sid)
+			// Never trust ids from the client: keep only live nodes of this workspace. A page_id is mapped to its node
+			// (assistants often pass that one); unknown ids are reported instead of failing the whole finding.
+			type src struct{ id, title string }
+			var sources []src
+			ignored := []string{}
+			if len(in.SourceNodeIDs) > 0 {
+				rows, err := a.db.Query(ctx, `SELECT DISTINCT ON (n.id) n.id::text, n.title, coalesce(n.page_id::text,'') FROM nodes n
+					WHERE n.workspace_id=$2 AND n.deleted_at IS NULL AND (n.id::text = ANY($1) OR n.page_id::text = ANY($1))`, in.SourceNodeIDs, in.WorkspaceID)
+				if err != nil {
+					return nil, out{}, errors.New("could not read the source nodes")
+				}
+				matched := map[string]bool{}
+				for rows.Next() {
+					var id, title, pageID string
+					if rows.Scan(&id, &title, &pageID) == nil {
+						sources = append(sources, src{id, title})
+						matched[id], matched[pageID] = true, true
+					}
+				}
+				rows.Close()
+				for _, sid := range in.SourceNodeIDs {
+					if !matched[sid] {
+						ignored = append(ignored, sid)
+					}
 				}
 			}
 			client := clientName(req)
-			id, err := a.mcpCreateNode(ctx, u, in.WorkspaceID, "finding", st, "", client, in.SourceNodeIDs)
+			var body strings.Builder
+			if d := strings.TrimSpace(in.Details); d != "" {
+				body.WriteString(truncateRunes(d, 4000) + "\n\n")
+			}
+			if len(sources) > 0 {
+				body.WriteString("Supported by:\n")
+				for _, sr := range sources {
+					body.WriteString("- " + sr.title + "\n")
+				}
+			}
+			body.WriteString("\nConclusion drawn by the AI assistant (" + client + "). Review it before copying it to Main.")
+			ids := make([]string, len(sources))
+			for i, sr := range sources {
+				ids[i] = sr.id
+			}
+			id, err := a.mcpCreateNode(ctx, u, in.WorkspaceID, "finding", st, strings.TrimSpace(body.String()), client, ids)
 			if err != nil {
 				return nil, out{}, err
 			}
 			edges := []string{}
-			for _, sid := range in.SourceNodeIDs {
+			for _, sid := range ids {
 				if eid, err := a.mcpLink(ctx, u, in.WorkspaceID, sid, id, "supports", "Source cited by the AI assistant for this finding.", client); err == nil {
 					edges = append(edges, eid)
 				}
 			}
-			return ok(gin.H{"node_id": id, "edge_ids": edges})
+			res := gin.H{"node_id": id, "edge_ids": edges}
+			if len(ignored) > 0 {
+				res["ignored_source_ids"] = ignored
+				res["hint"] = "Those ids are not nodes of this workspace; use the node_id values returned by add_source."
+			}
+			return ok(res)
 		})
 
-	mcp.AddTool(s, &mcp.Tool{Name: "link_nodes", Description: "Suggest an explained connection between two nodes. The user accepts, changes or rejects it. Relations: " +
+	addTool(s, &mcp.Tool{Name: "link_nodes", Description: "Suggest an explained connection between two nodes. The user accepts, changes or rejects it. Relations: " +
 		"answers, subtopic_of, explains, supports, contradicts, example_of, prerequisite_of, alternative_to, same_topic, source_of."},
 		func(ctx context.Context, req *mcp.CallToolRequest, in struct {
 			SourceID string `json:"source_id"`
@@ -412,11 +639,13 @@ func (a *App) mcpServer(u *User) *mcp.Server {
 			return ok(gin.H{"created": true, "edge_id": id})
 		})
 
-	mcp.AddTool(s, &mcp.Tool{Name: "list_conflicts", Description: "Potential conflicts between sources (the app never decides who is right)."},
+	addTool(s, &mcp.Tool{Name: "list_conflicts", Description: "Potential conflicts between sources (the app never decides who is right)."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in wsIn) (*mcp.CallToolResult, out, error) {
-			if _, err := a.mcpRole(ctx, in.WorkspaceID, u.ID); err != nil {
+			wsID, err := ws(ctx, in.WorkspaceID, false)
+			if err != nil {
 				return nil, out{}, err
 			}
+			in.WorkspaceID = wsID
 			cs, err := a.conflictsWhere(ctx, "WHERE workspace_id=$1", in.WorkspaceID)
 			if err != nil {
 				return nil, out{}, errors.New("could not list conflicts")
@@ -438,7 +667,7 @@ func (a *App) mcpServer(u *User) *mcp.Server {
 		}
 		return s, nil
 	}
-	mcp.AddTool(s, &mcp.Tool{Name: "get_references", Description: "Numbered reference list (Markdown + data) for a session (session_id) or a whole workspace (workspace_id)."},
+	addTool(s, &mcp.Tool{Name: "get_references", Description: "Numbered reference list (Markdown + data) for a session (session_id) or a whole workspace (workspace_id)."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in refIn) (*mcp.CallToolResult, out, error) {
 			var refs []Reference
 			var err error
@@ -455,21 +684,26 @@ func (a *App) mcpServer(u *User) *mcp.Server {
 				}
 				refs, err = a.workspaceReferences(ctx, in.WorkspaceID)
 			default:
-				return nil, out{}, errors.New("give session_id or workspace_id")
+				wsID, e := ws(ctx, "", false)
+				if e != nil {
+					return nil, out{}, e
+				}
+				refs, err = a.workspaceReferences(ctx, wsID)
 			}
 			if err != nil {
 				return nil, out{}, errors.New("could not load references")
 			}
 			return ok(gin.H{"references": refs, "markdown": referencesMarkdown(refs)})
 		})
-	mcp.AddTool(s, &mcp.Tool{Name: "get_session_report", Description: "Session statistics and the AI summary (if generated). Without session_id, uses the workspace's latest session."},
+	addTool(s, &mcp.Tool{Name: "get_session_report", Description: "Session statistics and the AI summary (if generated). Without session_id, uses the workspace's latest session."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in refIn) (*mcp.CallToolResult, out, error) {
 			id := in.SessionID
-			if id == "" && in.WorkspaceID != "" {
-				if _, err := a.mcpRole(ctx, in.WorkspaceID, u.ID); err != nil {
+			if id == "" {
+				wsID, err := ws(ctx, in.WorkspaceID, false)
+				if err != nil {
 					return nil, out{}, err
 				}
-				_ = a.db.QueryRow(ctx, `SELECT id FROM sessions WHERE workspace_id=$1 ORDER BY started_at DESC LIMIT 1`, in.WorkspaceID).Scan(&id)
+				_ = a.db.QueryRow(ctx, `SELECT id FROM sessions WHERE workspace_id=$1 ORDER BY started_at DESC LIMIT 1`, wsID).Scan(&id)
 				if id == "" {
 					return nil, out{}, errors.New("this workspace has no tracking sessions yet")
 				}
@@ -496,7 +730,8 @@ func (a *App) mcpQuestion(ctx context.Context, u *User, wsID, q, client string) 
 	if id != "" {
 		return id, false, nil
 	}
-	id, err := a.mcpCreateNode(ctx, u, wsID, "question", q, "", client, nil)
+	body := "Research question from the AI assistant (" + client + "). The sources it finds are linked here with \"answers\" connections, and its conclusions appear as Finding nodes."
+	id, err := a.mcpCreateNode(ctx, u, wsID, "question", q, body, client, nil)
 	return id, err == nil, err
 }
 
@@ -551,7 +786,7 @@ func (a *App) mcpLink(ctx context.Context, u *User, wsID, src, dst, rel, reason,
 	if e, err := a.loadEdge(ctx, id); err == nil {
 		a.publish(wsID, "edge.created", &u.ID, e)
 	}
-	a.logEvent(ctx, wsID, &u.ID, "edge_suggested", gin.H{"edge_id": id, "relation": rel, "via": "mcp", "client": client})
+	go a.logEvent(context.Background(), wsID, &u.ID, "edge_suggested", gin.H{"edge_id": id, "relation": rel, "via": "mcp", "client": client})
 	return id, nil
 }
 
@@ -565,10 +800,19 @@ func (a *App) mcpHandler() gin.HandlerFunc {
 	limiter := newRateLimiter(240, time.Minute)
 	var owners sync.Map // Mcp-Session-Id → user id
 	return func(c *gin.Context) {
-		u, err := a.userFromRequest(c)
-		if err != nil || u.TokenKind != "mcp" {
-			c.AbortWithStatusJSON(401, gin.H{"error": gin.H{"code": "unauthorized", "message": "Use a valid MCP token (Settings → Connect an AI assistant)"}})
-			return
+		var u *User
+		authz := c.GetHeader("Authorization")
+		if v, ok := mcpAuthCache.Load(authz); ok && time.Now().Before(v.(mcpAuthHit).exp) {
+			u = v.(mcpAuthHit).u
+		} else {
+			var err error
+			u, err = a.userFromRequest(c)
+			if err != nil || u.TokenKind != "mcp" {
+				mcpAuthCache.Delete(authz)
+				c.AbortWithStatusJSON(401, gin.H{"error": gin.H{"code": "unauthorized", "message": "Use a valid MCP token (Settings → Connect an AI assistant)"}})
+				return
+			}
+			mcpAuthCache.Store(authz, mcpAuthHit{u, time.Now().Add(20 * time.Second)})
 		}
 		if !limiter.allow("mcp:" + u.ID) {
 			c.Header("Retry-After", "30")
@@ -594,3 +838,94 @@ func (a *App) mcpHandler() gin.HandlerFunc {
 }
 
 type mcpUserKey struct{}
+
+// mcpAuthCache keeps valid MCP tokens for 20 s so a busy assistant does not pay a remote-database round trip per
+// request. revokeToken clears it, so a revoked token stops working immediately.
+var mcpAuthCache sync.Map // Authorization header → mcpAuthHit
+
+type mcpAuthHit struct {
+	u   *User
+	exp time.Time
+}
+
+const mcpInstructions = "Research Map turns research into a live visual graph in the user's browser. Whenever the user asks you to research " +
+	"anything, use these tools while you work (not only at the end): 1) start_research(topic) FIRST: it creates the workspace and opens it live " +
+	"for the user; 2) search the web with your own search tool; 3) add_source for EVERY useful page right after you read it (url, title, " +
+	"content = the relevant text, question = the query that found it); 4) add_finding for each conclusion, citing the source node ids; " +
+	"5) optionally link_nodes to explain relationships. workspace_id is optional after start_research. Everything lands in the workspace's " +
+	"AI Agent branch for the user to review. This server does not search the web itself."
+
+// appURL is the web app origin used in links handed back to AI assistants.
+func (a *App) appURL() string {
+	if len(a.cfg.WebOrigins) > 0 {
+		return strings.TrimRight(a.cfg.WebOrigins[0], "/")
+	}
+	return "http://localhost:3000"
+}
+
+// mcpStartWorkspace reuses the user's workspace with this exact title (so a retrying assistant does not create duplicates)
+// or creates a new one with Main, personal and AI Agent branches.
+func (a *App) mcpStartWorkspace(ctx context.Context, u *User, title, client string) (string, bool, error) {
+	var id string
+	_ = a.db.QueryRow(ctx, `SELECT w.id FROM workspaces w JOIN workspace_members m ON m.workspace_id=w.id AND m.user_id=$1
+		WHERE w.deleted_at IS NULL AND m.role IN ('owner','editor') AND lower(w.title)=lower($2) ORDER BY w.updated_at DESC LIMIT 1`, u.ID, title).Scan(&id)
+	if id != "" {
+		return id, false, nil
+	}
+	id, err := a.newWorkspace(ctx, u, title, "Research started by an AI assistant ("+client+") over MCP.")
+	if err != nil {
+		slog.Warn("[MCP] create workspace failed", "err", err)
+		return "", false, errors.New("could not create the workspace")
+	}
+	a.logEvent(ctx, id, &u.ID, "workspace_created", gin.H{"via": "mcp", "client": client})
+	return id, true, nil
+}
+
+// announceResearch tells every open tab of the user that an AI assistant started researching in a workspace, so the
+// web app opens it and the nodes appear live as the assistant adds them.
+func (a *App) announceResearch(ctx context.Context, u *User, wsID string, isNew bool, topic, client string) {
+	w, err := a.serializeWorkspace(ctx, wsID, u.ID)
+	if err != nil {
+		return
+	}
+	a.hub.BroadcastUser(u.ID, Message{Type: "mcp.research_started", WorkspaceID: wsID, By: &u.ID,
+		Data: gin.H{"workspace": w, "created": isNew, "topic": topic, "client": client}})
+}
+
+// toolOutputSchema describes every tool's {"result": ...} output. The schema the SDK infers for `any` is the boolean
+// `true`, which is valid JSON Schema but rejected by Gemini CLI's tool validation (it requires an object), and that
+// one rejection hides every tool from Gemini.
+var toolOutputSchema = map[string]any{
+	"type":       "object",
+	"properties": map[string]any{"result": map[string]any{"description": "The tool's result (JSON value)."}},
+	"required":   []string{"result"},
+}
+
+// addTool registers a tool with a lenient input schema and logs tool errors. LLM clients routinely send null for
+// optional fields or extra fields the schema does not list; with the SDK's strict inferred schema each of those is a
+// hard "MCP ERROR" in Gemini CLI, so nulls and unknown fields are accepted (the handlers validate what matters).
+func addTool[In any](s *mcp.Server, t *mcp.Tool, h mcp.ToolHandlerFor[In, out]) {
+	in, err := jsonschema.For[In](nil)
+	if err != nil {
+		panic(fmt.Errorf("tool %s: %w", t.Name, err))
+	}
+	in.AdditionalProperties = nil
+	for _, p := range in.Properties {
+		switch {
+		case p.Type != "":
+			p.Types, p.Type = []string{p.Type, "null"}, ""
+		case len(p.Types) > 0 && !slices.Contains(p.Types, "null"):
+			p.Types = append(p.Types, "null")
+		}
+	}
+	t.InputSchema = in
+	t.OutputSchema = toolOutputSchema
+	name := t.Name
+	mcp.AddTool(s, t, func(ctx context.Context, req *mcp.CallToolRequest, args In) (*mcp.CallToolResult, out, error) {
+		res, o, err := h(ctx, req, args)
+		if err != nil {
+			slog.Warn("[MCP] tool error", "tool", name, "client", clientName(req), "err", err)
+		}
+		return res, o, err
+	})
+}

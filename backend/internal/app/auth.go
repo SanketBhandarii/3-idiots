@@ -257,6 +257,7 @@ func (a *App) revokeToken(c *gin.Context) error {
 	if tag.RowsAffected() == 0 {
 		return httpx.NotFound("Token")
 	}
+	mcpAuthCache.Clear() // the cache is keyed by the raw token, so drop every entry
 	c.Status(204)
 	return nil
 }

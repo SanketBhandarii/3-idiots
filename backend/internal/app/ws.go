@@ -74,6 +74,29 @@ func (h *Hub) broadcastExcept(wsID string, skip *client, m Message) {
 	}
 }
 
+// userRoom is the per-user room a socket joins when it connects without a workspace_id (dashboard, settings).
+func userRoom(userID string) string { return "user:" + userID }
+
+// BroadcastUser sends a message to every live socket of a user: their dashboard socket and any open workspace.
+func (h *Hub) BroadcastUser(userID string, m Message) {
+	b, err := json.Marshal(m)
+	if err != nil {
+		return
+	}
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	for _, clients := range h.rooms {
+		for c := range clients {
+			if c.user.ID == userID {
+				select {
+				case c.send <- b:
+				default:
+				}
+			}
+		}
+	}
+}
+
 // Kick closes the live connections of users who lost access to a workspace (revoked link, removed member).
 func (h *Hub) Kick(wsID string, userIDs ...string) {
 	if len(userIDs) == 0 {
@@ -99,7 +122,9 @@ func (h *Hub) join(c *client) {
 	}
 	h.rooms[c.wsID][c] = true
 	h.mu.Unlock()
-	h.presence(c.wsID)
+	if c.wsID != userRoom(c.user.ID) {
+		h.presence(c.wsID)
+	}
 }
 
 func (h *Hub) leave(c *client) {
@@ -109,7 +134,9 @@ func (h *Hub) leave(c *client) {
 		delete(h.rooms, c.wsID)
 	}
 	h.mu.Unlock()
-	h.presence(c.wsID)
+	if c.wsID != userRoom(c.user.ID) {
+		h.presence(c.wsID)
+	}
 }
 
 func (h *Hub) presence(wsID string) {
@@ -135,7 +162,9 @@ func (a *App) serveWS(c *gin.Context) {
 	}
 	c.Set("user", u)
 	wsID := c.Query("workspace_id")
-	if _, err := a.requireWS(c, wsID, "viewer"); err != nil {
+	if wsID == "" { // user-level socket: only receives events addressed to this user (e.g. an AI assistant started research)
+		wsID = userRoom(u.ID)
+	} else if _, err := a.requireWS(c, wsID, "viewer"); err != nil {
 		httpx.WriteError(c, err)
 		return
 	}

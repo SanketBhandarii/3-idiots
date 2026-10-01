@@ -111,7 +111,12 @@ export function useWorkspace(workspaceId: string) {
     };
     socket = connectWorkspaceSocket(workspaceId, {
       onMessage,
-      onStatus: (s) => useCollabStore.getState().setSocketStatus(s),
+      onStatus: (s) => {
+        useCollabStore.getState().setSocketStatus(s);
+        // Resync on (re)connect: events sent before this socket joined (e.g. an AI assistant adding sources right
+        // after the workspace opened, or while offline) are not replayed, so refetch the graph once.
+        if (s === "open") void qc.invalidateQueries({ queryKey: ["graph", workspaceId] });
+      },
     });
     return () => {
       socket?.close();

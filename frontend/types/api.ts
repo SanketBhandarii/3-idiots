@@ -867,6 +867,7 @@ interface WsBase<T extends string, D> {
 
 export type WsServerMessage =
   | WsBase<"node.created", ResearchNode>
+  | WsBase<"mcp.research_started", { workspace: Workspace; created: boolean; topic: string; client: string }>
   | WsBase<"node.updated", ResearchNode>
   | WsBase<"node.deleted", { id: UUID }>
   | WsBase<"edge.created", ResearchEdge>

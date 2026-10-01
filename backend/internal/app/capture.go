@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -38,7 +39,7 @@ func (a *App) startSession(c *gin.Context) error {
 		return err
 	}
 	u := currentUser(c)
-	ss, err := collect[Session](c, a.db, sessionSelect+"WHERE s.workspace_id=$1 AND s.user_id=$2 AND s.state<>'stopped'", wsID, u.ID)
+	ss, err := collect[Session](c, a.db, sessionSelect+"WHERE s.workspace_id=$1 AND s.user_id=$2 AND s.state<>'stopped'"+humanSession, wsID, u.ID)
 	if err != nil {
 		return err
 	}
@@ -54,7 +55,7 @@ func (a *App) startSession(c *gin.Context) error {
 	err = a.db.QueryRow(c, `INSERT INTO sessions (workspace_id,user_id,branch_id,title)
 		VALUES ($1,$2,$3,'Session ' || (SELECT count(*)+1 FROM sessions WHERE workspace_id=$1)) RETURNING id`, wsID, u.ID, branch).Scan(&id)
 	if isUnique(err) { // a parallel request already started one
-		ss, _ = collect[Session](c, a.db, sessionSelect+"WHERE s.workspace_id=$1 AND s.user_id=$2 AND s.state<>'stopped'", wsID, u.ID)
+		ss, _ = collect[Session](c, a.db, sessionSelect+"WHERE s.workspace_id=$1 AND s.user_id=$2 AND s.state<>'stopped'"+humanSession, wsID, u.ID)
 		if len(ss) > 0 {
 			c.JSON(200, ss[0])
 			return nil
@@ -128,7 +129,7 @@ func (a *App) listSessions(c *gin.Context) error {
 // extensionState tells the extension which session (if any) this user is tracking, so it can resume after a restart.
 func (a *App) extensionState(c *gin.Context) error {
 	u := currentUser(c)
-	ss, err := collect[Session](c, a.db, sessionSelect+"WHERE s.user_id=$1 AND s.state<>'stopped' ORDER BY s.started_at DESC LIMIT 1", u.ID)
+	ss, err := collect[Session](c, a.db, sessionSelect+"WHERE s.user_id=$1 AND s.state<>'stopped'"+humanSession+" ORDER BY s.started_at DESC LIMIT 1", u.ID)
 	if err != nil {
 		return err
 	}
@@ -158,6 +159,7 @@ type capturePageReq struct {
 	Transition    string            `json:"transition"`
 	TabID         *int              `json:"tab_id"`
 	WorkspaceID   string            `json:"workspace_id"`
+	ClientName    string            `json:"-"` // MCP client name (server-set, never from the request body)
 }
 
 func truncateRunes(s string, n int) string {
@@ -169,8 +171,16 @@ func truncateRunes(s string, n int) string {
 }
 
 func (a *App) blocked(ctx context.Context, wsID, domain string) bool {
+	return blockedIn(a.blocklist(ctx, wsID), domain)
+}
+
+func (a *App) blocklist(ctx context.Context, wsID string) []string {
 	var list []string
 	_ = a.db.QueryRow(ctx, `SELECT coalesce(ARRAY(SELECT jsonb_array_elements_text(settings->'blocklist')), '{}') FROM workspaces WHERE id=$1`, wsID).Scan(&list)
+	return list
+}
+
+func blockedIn(list []string, domain string) bool {
 	for _, b := range list {
 		b = strings.ToLower(strings.TrimSpace(b))
 		if b != "" && (domain == b || strings.HasSuffix(domain, "."+b)) {
@@ -181,7 +191,7 @@ func (a *App) blocked(ctx context.Context, wsID, domain string) bool {
 }
 
 func (a *App) activeSession(ctx context.Context, wsID, userID string) *Session {
-	ss, _ := collect[Session](ctx, a.db, sessionSelect+"WHERE s.workspace_id=$1 AND s.user_id=$2 AND s.state<>'stopped'", wsID, userID)
+	ss, _ := collect[Session](ctx, a.db, sessionSelect+"WHERE s.workspace_id=$1 AND s.user_id=$2 AND s.state<>'stopped'"+humanSession, wsID, userID)
 	if len(ss) == 0 {
 		return nil
 	}
@@ -329,7 +339,7 @@ func (a *App) ingestPage(ctx context.Context, u *User, b capturePageReq, session
 	x, y := a.placement(ctx, tx, b.WorkspaceID, openerID)
 	branch := ""
 	if via == "mcp" {
-		_ = tx.QueryRow(ctx, `SELECT id FROM branches WHERE workspace_id=$1 AND kind='agent'`, b.WorkspaceID).Scan(&branch)
+		branch = a.agentBranch(ctx, b.WorkspaceID)
 	} else if session != nil {
 		branch = session.BranchID
 	}
@@ -339,27 +349,41 @@ func (a *App) ingestPage(ctx context.Context, u *User, b capturePageReq, session
 		}
 	}
 	var nodeID string
-	if err := tx.QueryRow(ctx, `INSERT INTO nodes (workspace_id,branch_id,type,page_id,title,x,y,status,ai_stage,why_opened,created_by,created_via)
-		VALUES ($1,$2,'page',$3,$4,$5,$6,'analyzing','captured',$7,$8,$9) RETURNING id`,
-		b.WorkspaceID, branch, pageID, title, x, y, why, u.ID, via).Scan(&nodeID); err != nil {
+	if err := tx.QueryRow(ctx, `INSERT INTO nodes (workspace_id,branch_id,type,page_id,title,x,y,status,ai_stage,why_opened,created_by,created_via,client_name)
+		VALUES ($1,$2,'page',$3,$4,$5,$6,'analyzing','captured',$7,$8,$9,NULLIF($10,'')) RETURNING id`,
+		b.WorkspaceID, branch, pageID, title, x, y, why, u.ID, via, b.ClientName).Scan(&nodeID); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	// Show the node first; the AI pipeline and bookkeeping follow without delaying it.
-	if p, err := a.loadPage(ctx, pageID); err == nil {
-		a.publish(b.WorkspaceID, "page.created", &u.ID, p)
-	}
-	a.publishNode(ctx, "node.created", nodeID, &u.ID)
-	a.pipeline.enqueue(nodeID)
+	// The node is saved: answer now and broadcast it in the background, loading page and node concurrently (each load
+	// is several round trips to a possibly remote database). Then the AI pipeline and bookkeeping follow.
 	// ctx may be the request's gin.Context (pooled after the handler returns), so use a fresh context here.
 	go func() {
 		bg, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
+		var page *Page
+		var wg sync.WaitGroup
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if p, err := a.loadPage(bg, pageID); err == nil {
+				page = p
+			}
+		}()
+		node, nodeErr := a.loadNode(bg, nodeID)
+		wg.Wait()
+		if page != nil {
+			a.publish(b.WorkspaceID, "page.created", &u.ID, page)
+		}
+		if nodeErr == nil {
+			a.publish(b.WorkspaceID, "node.created", &u.ID, node)
+		}
+		a.pipeline.enqueue(nodeID)
 		a.logEvent(bg, b.WorkspaceID, &u.ID, "node_added", gin.H{"node_id": nodeID, "title": title})
 		a.touch(bg, b.WorkspaceID)
-		if session != nil {
+		if session != nil && via != "mcp" { // an assistant's session is not the user's tracking session
 			if s, err := a.loadSession(bg, session.ID); err == nil {
 				a.publish(b.WorkspaceID, "session.updated", nil, s)
 			}
@@ -943,3 +967,7 @@ func (a *App) generateReport(c *gin.Context) error {
 }
 
 var errNoAgent = errors.New("agent unavailable")
+
+// humanSession excludes the sessions MCP assistants record on the AI Agent branch from "the user's tracking session":
+// an assistant researching must not show as the user tracking, nor pull the extension's captures into its branch.
+const humanSession = " AND NOT EXISTS (SELECT 1 FROM branches ab WHERE ab.id=s.branch_id AND ab.kind='agent')"

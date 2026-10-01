@@ -197,9 +197,12 @@ norm = lambda s: re.sub(r"\s+", " ", s).strip().lower()
 @app.post("/v1/understand", dependencies=[Depends(auth)])
 def understand(inp: dict):
     text, fetched, fetched_title = inp.get("content_text") or "", "", ""
-    if not text.strip():
-        text, fetched_title = fetch(inp["url"])
-        fetched = text
+    if not text.strip() or (inp.get("fetch_if_short") and len(text.strip()) < 800):
+        # No text, or only a snippet (AI assistants over MCP send a few sentences): read the real page so the summary,
+        # claims and connections come from the full source. Keep the snippet when the page cannot be read.
+        page_text, fetched_title = fetch(inp["url"])
+        if len(page_text.strip()) > len(text.strip()):
+            text = fetched = (text.strip() + "\n\n" + page_text).strip() if text.strip() else page_text
     user = f"URL: {inp['url']}\nTitle: {inp.get('title','')}\n<page_content>\n{text[:3000]}\n</page_content>"
     fallback = False
     try:

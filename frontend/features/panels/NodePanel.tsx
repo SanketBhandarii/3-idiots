@@ -341,7 +341,8 @@ export function NodePanel({ nodeId, readOnly }: { nodeId: string; readOnly: bool
                 </>
               ) : (
                 <>
-                  {node.body && node.type !== "question" ? <Markdown text={node.body} /> : <p className="text-sm text-faint">Nothing written yet.</p>}
+                  {/* Extension questions keep the search engine name in body; questions from AI assistants (MCP) have real details. */}
+                  {node.body && (node.type !== "question" || node.created_via === "mcp") ? <Markdown text={node.body} /> : <p className="text-sm text-faint">Nothing written yet.</p>}
                   {!readOnly && <Button size="xs" variant="soft" className="mt-2" onClick={() => setBody(node.body)}><PencilSimple size={13} /> Edit</Button>}
                 </>
               )}

@@ -54,7 +54,7 @@ func (a *App) serializeWorkspace(ctx context.Context, wsID, userID string) (*Wor
 		FROM workspace_members m JOIN users u ON u.id=m.user_id WHERE m.workspace_id=$1 ORDER BY m.joined_at`, wsID); err != nil {
 		return nil, err
 	}
-	ss, err := collect[Session](ctx, a.db, sessionSelect+"WHERE s.workspace_id=$1 AND s.user_id=$2 AND s.state<>'stopped'", wsID, userID)
+	ss, err := collect[Session](ctx, a.db, sessionSelect+"WHERE s.workspace_id=$1 AND s.user_id=$2 AND s.state<>'stopped'"+humanSession, wsID, userID)
 	if err != nil {
 		return nil, err
 	}

@@ -19,6 +19,7 @@ func Connect(ctx context.Context, url string, maxConns int32) (*pgxpool.Pool, er
 		return nil, fmt.Errorf("parse DATABASE_URL: %w", err) // pgx errors do not include the password
 	}
 	cfg.MaxConns = maxConns
+	cfg.MinConns = min(2, maxConns) // keep warm connections: a new TLS connection to a remote database costs several round trips
 	cfg.MaxConnIdleTime = 5 * time.Minute
 	cfg.HealthCheckPeriod = 30 * time.Second
 	cfg.ConnConfig.RuntimeParams["application_name"] = "research-map-api"

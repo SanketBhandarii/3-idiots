@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { TooltipProvider } from "@radix-ui/react-tooltip";
 import { Toaster } from "sonner";
 import { ApiError } from "@/lib/api/errors";
+import { AgentResearchListener } from "@/features/workspace/AgentResearchListener";
 
 export function Providers({ children }: { children: ReactNode }) {
   const [client] = useState(
@@ -22,6 +23,7 @@ export function Providers({ children }: { children: ReactNode }) {
     <QueryClientProvider client={client}>
       <TooltipProvider>
         {children}
+        <AgentResearchListener />
         <Toaster position="top-right" offset={16} toastOptions={{ unstyled: true }} />
       </TooltipProvider>
     </QueryClientProvider>

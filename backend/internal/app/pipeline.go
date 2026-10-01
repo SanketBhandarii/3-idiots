@@ -782,14 +782,17 @@ func (p *Pipeline) checkConflicts(ctx context.Context, wsID, nodeID, pageID stri
 		var branch string
 		_ = a.db.QueryRow(ctx, `SELECT branch_id FROM nodes WHERE id=$1`, nodeID).Scan(&branch)
 		var eid string
+		// Only create a contradicts edge for actual contradictions; different_context is not a contradiction.
 		// Agent 2 may already have drawn a contradicts edge for this pair (either direction); never add a second one.
-		if a.db.QueryRow(ctx, `INSERT INTO edges (workspace_id,branch_id,source_id,target_id,relation,reason,evidence,confidence,origin,state)
-			SELECT $1,$2,$3,$4,'contradicts',$5,$6,$7,'ai','suggested'
-			WHERE NOT EXISTS (SELECT 1 FROM edges WHERE relation='contradicts' AND ((source_id=$3 AND target_id=$4) OR (source_id=$4 AND target_id=$3)))
-			ON CONFLICT DO NOTHING RETURNING id`,
-			wsID, branch, x.otherNode, nodeID, "The sources make claims that seem to disagree: "+r.Topic, mustJSON(nonNil(r.KeyDifferences)), r.Confidence).Scan(&eid) == nil {
-			if e, err := a.loadEdge(ctx, eid); err == nil {
-				a.publish(wsID, "edge.created", nil, e)
+		if r.Label == "contradict" || r.Label == "partially_contradict" {
+			if a.db.QueryRow(ctx, `INSERT INTO edges (workspace_id,branch_id,source_id,target_id,relation,reason,evidence,confidence,origin,state)
+				SELECT $1,$2,$3,$4,'contradicts',$5,$6,$7,'ai','suggested'
+				WHERE NOT EXISTS (SELECT 1 FROM edges WHERE relation='contradicts' AND ((source_id=$3 AND target_id=$4) OR (source_id=$4 AND target_id=$3)))
+				ON CONFLICT DO NOTHING RETURNING id`,
+				wsID, branch, x.otherNode, nodeID, "The sources make claims that seem to disagree: "+r.Topic, mustJSON(nonNil(r.KeyDifferences)), r.Confidence).Scan(&eid) == nil {
+				if e, err := a.loadEdge(ctx, eid); err == nil {
+					a.publish(wsID, "edge.created", nil, e)
+				}
 			}
 		}
 		if cs, err := a.conflictsWhere(ctx, "WHERE id=$1", cid); err == nil && len(cs) == 1 {

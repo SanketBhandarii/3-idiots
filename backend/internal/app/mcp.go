@@ -50,6 +50,26 @@ func (a *App) agentBranch(ctx context.Context, wsID string) string {
 	return id
 }
 
+// mcpAgentSession finds or starts an active research session on the AI Agent branch.
+func (a *App) mcpAgentSession(ctx context.Context, u *User, wsID, client string) (*Session, error) {
+	branch := a.agentBranch(ctx, wsID)
+	if branch == "" {
+		return nil, errors.New("workspace has no AI Agent branch")
+	}
+	title := "AI assistant (" + client + ")"
+	var sid string
+	err := a.db.QueryRow(ctx, `SELECT id FROM sessions WHERE workspace_id=$1 AND user_id=$2 AND branch_id=$3 AND state='active' ORDER BY started_at DESC LIMIT 1`,
+		wsID, u.ID, branch).Scan(&sid)
+	if err != nil {
+		err = a.db.QueryRow(ctx, `INSERT INTO sessions (workspace_id,user_id,branch_id,title,state) VALUES ($1,$2,$3,$4,'active') RETURNING id`,
+			wsID, u.ID, branch, title).Scan(&sid)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return a.loadSession(ctx, sid)
+}
+
 func ok[T any](v T) (*mcp.CallToolResult, out, error) { return nil, out{v}, nil }
 
 // clientName is the MCP client's self-reported name from the initialize handshake (e.g. "claude-code").
@@ -272,7 +292,8 @@ func (a *App) mcpServer(u *User) *mcp.Server {
 				}
 				b.SearchQuery = &q // ingestPage links the page to the Question node; Agent 2 can add "answers"
 			}
-			res, err := a.ingestPage(ctx, u, b, nil, "mcp")
+			session, _ := a.mcpAgentSession(ctx, u, in.WorkspaceID, client)
+			res, err := a.ingestPage(ctx, u, b, session, "mcp")
 			if err != nil {
 				slog.Warn("[MCP] add_source failed", "err", err)
 				return nil, out{}, errors.New("could not add the source")

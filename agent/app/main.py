@@ -119,18 +119,39 @@ class Understanding(BaseModel):
     questions_answered: list[str] = []
 
 
-def _public_host(url: str) -> bool:
-    """SSRF guard: only fetch http(s) URLs whose host resolves exclusively to public (global) IPs."""
-    import ipaddress, socket
+def is_safe_ip(ip: str) -> bool:
+    """Returns True only if ip is a valid, globally routable public IP."""
+    import ipaddress
+    try:
+        addr = ipaddress.ip_address(ip.split("%")[0])
+        return addr.is_global
+    except (ValueError, AttributeError):
+        return False
+
+
+def validate_url(url: str) -> str | None:
+    """Returns the URL if valid http(s) resolving strictly to safe public IPs, else None."""
+    import socket
     from urllib.parse import urlparse
     p = urlparse(url)
     if p.scheme not in ("http", "https") or not p.hostname:
-        return False
+        return None
     try:
         infos = socket.getaddrinfo(p.hostname, p.port or (443 if p.scheme == "https" else 80), proto=socket.IPPROTO_TCP)
     except (OSError, ValueError):
-        return False
-    return bool(infos) and all(ipaddress.ip_address(i[4][0].split("%")[0]).is_global for i in infos)
+        return None
+    if not infos:
+        return None
+    for i in infos:
+        ip_str = i[4][0].split("%")[0]
+        if not is_safe_ip(ip_str):
+            return None
+    return url
+
+
+def _public_host(url: str) -> bool:
+    """SSRF guard: only fetch http(s) URLs whose host resolves exclusively to public (global) IPs."""
+    return validate_url(url) is not None
 
 
 def safe_get(url: str, max_bytes: int = 15 << 20) -> tuple[bytes, str]:

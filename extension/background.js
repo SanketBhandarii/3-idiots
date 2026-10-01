@@ -29,6 +29,39 @@ async function api(method, path, body) {
   return data;
 }
 
+/* ---------------- outbox: captures survive Go being down and service-worker restarts */
+const RETRYABLE = (e) => !e.status || e.status >= 500 || e.status === 429;
+async function sendOrQueue(method, path, body) {
+  try { return await api(method, path, body); }
+  catch (e) {
+    if (!RETRYABLE(e)) throw e;
+    const { outbox = [] } = await get("outbox");
+    outbox.push({ method, path, body, tries: 0 });
+    await set({ outbox: outbox.slice(-100) });
+    console.warn("[EXTENSION] backend unreachable, queued", path);
+    return null;
+  }
+}
+async function flushOutbox() {
+  const { outbox = [] } = await get("outbox");
+  if (!outbox.length) return;
+  const keep = [];
+  for (const item of outbox) {
+    try {
+      const res = await api(item.method, item.path, item.body);
+      if (item.path === "/capture/page" && res?.page_id) await rememberCaptured(item.body.url, res.page_id);
+      console.info("[EXTENSION] queued item delivered", item.path);
+    } catch (e) {
+      if (RETRYABLE(e) && item.tries < 20) keep.push({ ...item, tries: item.tries + 1 });
+    }
+  }
+  await set({ outbox: keep });
+}
+async function rememberCaptured(url, value) {
+  const { captured = {} } = await get("captured");
+  await set({ captured: { ...captured, [url.startsWith("q:") ? url : normalizeUrl(url)]: value } });
+}
+
 /* ---------------- URL rules (same as backend urlnorm + frontend url.ts) */
 function normalizeUrl(raw) {
   try {
@@ -53,8 +86,9 @@ function searchOf(url) {
 async function state() {
   return get(["tracking", "paused", "workspaceId", "sessionId", "blocklist", "minDwell", "captured"]);
 }
-async function allowed(url) {
+async function allowed(url, tab) {
   const s = await state();
+  if (tab?.incognito) return false; // never track incognito (manifest also sets incognito: not_allowed)
   if (!s.tracking || s.paused || !s.workspaceId || !isHttp(url)) return false;
   const host = new URL(url).hostname.replace(/^www\./, "");
   if (host === "localhost" || host === "127.0.0.1") return false; // never capture our own app
@@ -92,12 +126,26 @@ async function handleExternal(msg, sender) {
       await set({ tracking: true, paused: false, workspaceId: msg.workspace_id, sessionId: msg.session_id,
         blocklist: ws?.settings?.blocklist || [], minDwell: ws?.settings?.min_dwell_seconds || 8, captured: {} });
       notifyTracking();
+      // Give the user a fresh normal tab to research in. chrome://newtab is not http(s), so it is never captured itself.
+      let openedTabId = null;
+      if (msg.open_tab !== false) {
+        try {
+          const tab = await chrome.tabs.create({ active: true });
+          openedTabId = tab.id;
+          await chrome.windows.update(tab.windowId, { focused: true });
+        } catch (e) { console.warn("[EXTENSION] could not open tracking tab", e); }
+      }
       checkActiveTab();
-      return { ok: true };
+      return { ok: true, tab_id: openedTabId };
     }
     case "PAUSE_TRACKING": await set({ paused: true }); await endVisit(); notifyTracking(); return { ok: true };
     case "RESUME_TRACKING": await set({ paused: false }); notifyTracking(); checkActiveTab(); return { ok: true };
-    case "STOP_TRACKING": await endVisit(); await flushVisits(); await set({ tracking: false, paused: false, sessionId: null }); notifyTracking(); return { ok: true };
+    case "STOP_TRACKING": await endVisit(); await flushVisits(); await flushOutbox(); await sset({ dwell: null }); await set({ tracking: false, paused: false, sessionId: null }); notifyTracking(); return { ok: true };
+    case "GET_OPEN_TABS": {
+      const tabs = (await chrome.tabs.query({})).filter((t) => isHttp(t.url) && !t.incognito);
+      sendTabsState();
+      return { ok: true, tabs: tabs.map((t) => ({ url: t.url, url_normalized: normalizeUrl(t.url), title: t.title, active: t.active })) };
+    }
     case "FOCUS_TAB": {
       const tab = await findTab(msg.url);
       if (!tab) { await chrome.tabs.create({ url: msg.url }); return { ok: true, opened: true }; }
@@ -177,7 +225,7 @@ async function sendTabsState() {
 /* ---------------- time tracking: visits while tab active + window focused + user not idle */
 async function startVisit(tab) {
   await endVisit();
-  if (!tab || !(await allowed(tab.url))) return;
+  if (!tab || !(await allowed(tab.url, tab))) return;
   await sset({ visit: { url: tab.url, tab_id: tab.id, started_at: new Date().toISOString() } });
 }
 async function endVisit() {
@@ -204,12 +252,27 @@ async function checkActiveTab() {
   clearTimeout(dwellTimer);
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   await startVisit(tab);
-  if (!tab || tab.status !== "complete" || !(await allowed(tab.url))) return;
+  if (!tab || tab.status !== "complete" || !(await allowed(tab.url, tab))) return;
   const s = await state();
   const search = searchOf(tab.url);
   if (search) { captureSearch(tab, search); return; }
-  if ((s.captured || {})[normalizeUrl(tab.url)]) { snapshot(tab); return; }
-  dwellTimer = setTimeout(() => capturePage(tab.id, "link"), (s.minDwell || 8) * 1000);
+  if ((s.captured || {})[normalizeUrl(tab.url)]) { snapshot(tab); await sset({ dwell: null }); return; }
+  const ms = (s.minDwell || 8) * 1000;
+  // The due time is persisted so a service-worker restart does not lose the pending capture.
+  await sset({ dwell: { tabId: tab.id, url: tab.url, due: Date.now() + ms } });
+  dwellTimer = setTimeout(checkDwell, ms + 50);
+}
+async function checkDwell() {
+  const { dwell } = await sget("dwell");
+  if (!dwell || Date.now() < dwell.due) return;
+  await sset({ dwell: null });
+  const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  // Still the same page, still active + focused, user not idle -> dwell satisfied.
+  if (!tab || tab.id !== dwell.tabId || normalizeUrl(tab.url) !== normalizeUrl(dwell.url)) return;
+  const win = await chrome.windows.get(tab.windowId).catch(() => null);
+  if (!win?.focused) return;
+  if ((await chrome.idle.queryState(60)) !== "active") return;
+  capturePage(tab.id, "link");
 }
 
 async function captureSearch(tab, search) {
@@ -217,22 +280,34 @@ async function captureSearch(tab, search) {
   const key = "q:" + search.query.toLowerCase();
   if ((s.captured || {})[key]) return;
   try {
-    await api("POST", "/capture/search", { query: search.query, engine: search.engine, url: tab.url, workspace_id: s.workspaceId });
-    await set({ captured: { ...(s.captured || {}), [key]: 1 } });
-  } catch { /* shown in popup via lastError */ }
+    await sendOrQueue("POST", "/capture/search", { query: search.query, engine: search.engine, url: tab.url, workspace_id: s.workspaceId });
+    await rememberCaptured(key, 1);
+    console.info("[EXTENSION] search captured", search.engine);
+  } catch (e) { console.warn("[EXTENSION] search capture rejected", e.message); }
 }
 
 function extractPage() {
   const pick = (sel, attr = "content") => document.querySelector(sel)?.getAttribute(attr) || undefined;
-  const root = document.querySelector("article, main, [role=main]") || document.body;
-  const clone = root.cloneNode(true);
-  clone.querySelectorAll("script,style,noscript,nav,footer,header,aside,form,input,textarea,[type=password],[aria-hidden=true]").forEach((e) => e.remove());
-  const text = (clone.innerText || "").replace(/\n{3,}/g, "\n\n").trim().slice(0, 20000);
+  // Pages with a visible password field are login/account pages: never captured automatically.
+  const sensitive = [...document.querySelectorAll("input[type=password]")].some((e) => e.offsetParent !== null);
+  let text = "", byline;
+  try {
+    // Readability (vendor/Readability.js, injected first) = Firefox Reader View engine. Runs on a clone; the page is untouched.
+    const art = typeof Readability === "function" ? new Readability(document.cloneNode(true)).parse() : null; // eslint-disable-line no-undef
+    if (art?.textContent) { text = art.textContent; byline = art.byline || undefined; }
+  } catch { /* fall back below */ }
+  if (text.trim().length < 200) {
+    const root = document.querySelector("article, main, [role=main]") || document.body;
+    const clone = root.cloneNode(true);
+    clone.querySelectorAll("script,style,noscript,nav,footer,header,aside,form,input,textarea,[type=password],[aria-hidden=true]").forEach((e) => e.remove());
+    text = clone.innerText || clone.textContent || "";
+  }
+  text = text.replace(/[ \t]+/g, " ").replace(/\n\s*\n\s*\n+/g, "\n\n").trim().slice(0, 20000);
   return {
-    title: document.title, text,
+    title: document.title, text, sensitive,
     favicon: pick("link[rel~='icon']", "href") ? new URL(pick("link[rel~='icon']", "href"), location.href).href : location.origin + "/favicon.ico",
     meta: { description: pick("meta[name=description]") || pick("meta[property='og:description']"), og_image: pick("meta[property='og:image']"),
-      site_name: pick("meta[property='og:site_name']"), author: pick("meta[name=author]"), published_time: pick("meta[property='article:published_time']"),
+      site_name: pick("meta[property='og:site_name']"), author: pick("meta[name=author]") || byline, published_time: pick("meta[property='article:published_time']"),
       lang: document.documentElement.lang || undefined },
     links: [...document.querySelectorAll("a[href^='http']")].slice(0, 200).map((a) => a.href),
   };
@@ -240,11 +315,15 @@ function extractPage() {
 
 async function capturePage(tabId, transition) {
   const tab = await chrome.tabs.get(tabId).catch(() => null);
-  if (!tab || !(await allowed(tab.url))) return;
+  if (!tab || !(await allowed(tab.url, tab))) return;
   const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   if (transition !== "manual" && active?.id !== tabId) return; // user left before the dwell time
   let page = { title: tab.title, text: "", meta: {}, links: [] };
-  try { [{ result: page }] = await chrome.scripting.executeScript({ target: { tabId }, func: extractPage }); } catch { /* PDFs / restricted pages: backend fetches text */ }
+  try {
+    await chrome.scripting.executeScript({ target: { tabId }, files: ["vendor/Readability.js"] }).catch(() => {});
+    [{ result: page }] = await chrome.scripting.executeScript({ target: { tabId }, func: extractPage });
+  } catch { /* PDFs / restricted pages: backend fetches text */ }
+  if (page.sensitive && transition !== "manual") { console.info("[EXTENSION] skipped page with password field"); return; }
   let opener_url = null, search_query = null;
   if (tab.openerTabId) {
     const op = await chrome.tabs.get(tab.openerTabId).catch(() => null);
@@ -254,14 +333,16 @@ async function capturePage(tabId, transition) {
   if (!opener_url && lastUrl[tabId] && lastUrl[tabId] !== tab.url) { opener_url = lastUrl[tabId]; search_query = searchOf(opener_url)?.query || null; }
   const s = await state();
   try {
-    const res = await api("POST", "/capture/page", {
+    const res = await sendOrQueue("POST", "/capture/page", {
       url: tab.url, title: page.title || tab.title, favicon_url: page.favicon, meta: Object.fromEntries(Object.entries(page.meta || {}).filter(([, v]) => v)),
       content_text: page.text, outgoing_links: page.links, opener_url, search_query, transition: search_query ? "search_result" : transition,
       tab_id: tabId, captured_at: new Date().toISOString(), workspace_id: s.workspaceId,
     });
-    await set({ captured: { ...(s.captured || {}), [normalizeUrl(tab.url)]: res.page_id } });
+    if (!res) return; // queued; delivered by the next flush
+    await rememberCaptured(tab.url, res.page_id);
+    console.info("[EXTENSION] page captured", { node_id: res.node_id, page_id: res.page_id, is_new: res.is_new });
     snapshot(tab, res.page_id);
-  } catch (e) { console.warn("capture failed", e.message); }
+  } catch (e) { console.warn("[EXTENSION] capture rejected", e.message); }
 }
 
 /* ---------------- snapshots (max 2/s allowed by Chrome; we take one every few seconds at most) */
@@ -315,12 +396,15 @@ chrome.windows.onFocusChanged.addListener((w) => { if (w === chrome.windows.WIND
 chrome.idle.setDetectionInterval(60);
 chrome.idle.onStateChanged.addListener((st) => { if (st === "active") checkActiveTab(); else endVisit(); });
 
-chrome.alarms.create("flush", { periodInMinutes: 0.5 });
+chrome.alarms.get("flush").then((al) => { if (!al) chrome.alarms.create("flush", { periodInMinutes: 0.5 }); });
+checkDwell(); // resume a pending dwell after a worker restart
 chrome.alarms.onAlarm.addListener(async (a) => {
   if (a.name !== "flush") return;
   await flushVisits();
+  await flushOutbox();
+  await checkDwell();
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
-  if (tab && (await allowed(tab.url))) snapshot(tab);
+  if (tab && (await allowed(tab.url, tab))) snapshot(tab);
 });
 
 chrome.runtime.onInstalled.addListener(() => {

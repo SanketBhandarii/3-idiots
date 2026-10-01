@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -227,9 +228,56 @@ func (a *App) loadNode(ctx context.Context, id string) (*Node, error) {
 	return &ns[0], nil
 }
 
-// fillActivity sets Research Memory data (time spent, visits) from real visit rows.
+// journeyStep is one page's place in the research journey: the research page the user had open right before
+// and right after it was first opened.
+type journeyStep struct {
+	PrevPage, NextPage   *string
+	PrevLabel, NextLabel *string
+}
+
+// researchSequence derives the research journey from visit rows (deterministic browser history, no AI).
+// Visits are ordered per user; only pages shown in the graph count (inbox/deleted pages are skipped), and
+// back-to-back visits of the same page collapse into one step, so A,A,B,A,C reads as A → B → A → C.
+// Previous/next belong to a page's first step, so a later revisit never rewrites when it was first researched.
+// Computed on read, so it updates as soon as new visits arrive.
+func (a *App) researchSequence(ctx context.Context, wsID string) (map[string]journeyStep, error) {
+	rows, err := a.db.Query(ctx, `WITH v AS (
+			SELECT v.user_id, v.page_id, v.started_at, lag(v.page_id) OVER (PARTITION BY v.user_id ORDER BY v.started_at) AS before
+			FROM visits v WHERE v.workspace_id=$1 AND v.page_id IS NOT NULL
+			AND EXISTS (SELECT 1 FROM nodes n WHERE n.page_id=v.page_id AND n.type='page' AND n.deleted_at IS NULL AND n.status<>'inbox')
+		), steps AS (
+			SELECT page_id, lag(page_id) OVER w AS prev_page, lead(page_id) OVER w AS next_page,
+				row_number() OVER (PARTITION BY page_id ORDER BY started_at) AS occ
+			FROM v WHERE before IS DISTINCT FROM page_id
+			WINDOW w AS (PARTITION BY user_id ORDER BY started_at)
+		)
+		SELECT s.page_id, s.prev_page, s.next_page,
+			coalesce(nullif(pp.main_concept,''), pp.title), coalesce(nullif(pn.main_concept,''), pn.title)
+		FROM steps s LEFT JOIN pages pp ON pp.id=s.prev_page LEFT JOIN pages pn ON pn.id=s.next_page WHERE s.occ=1`, wsID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	seq := map[string]journeyStep{}
+	for rows.Next() {
+		var pid string
+		var st journeyStep
+		if err := rows.Scan(&pid, &st.PrevPage, &st.NextPage, &st.PrevLabel, &st.NextLabel); err != nil {
+			return nil, err
+		}
+		seq[pid] = st
+	}
+	return seq, rows.Err()
+}
+
+// fillActivity sets Research Memory data (time spent, visits, previous/next topic) from real visit rows.
 func (a *App) fillActivity(ctx context.Context, wsID string, nodes []Node) error {
-	rows, err := a.db.Query(ctx, `SELECT page_id, min(started_at), max(ended_at),
+	seq, err := a.researchSequence(ctx, wsID)
+	if err != nil {
+		return err
+	}
+	// Time spent = sum of tracked visit time (tab active + window focused + user not idle), never last-first.
+	rows, err := a.db.Query(ctx, `SELECT page_id, min(started_at), max(started_at),
 		sum(extract(epoch FROM ended_at-started_at)*1000)::bigint, count(*) FROM visits
 		WHERE workspace_id=$1 AND page_id IS NOT NULL GROUP BY page_id`, wsID)
 	if err != nil {
@@ -245,6 +293,7 @@ func (a *App) fillActivity(ctx context.Context, wsID string, nodes []Node) error
 			return err
 		}
 		ac.FirstOpenedAt, ac.LastOpenedAt = &first, &last
+		ac.PreviousTopic, ac.NextTopic = seq[pid].PrevLabel, seq[pid].NextLabel
 		acts[pid] = ac
 	}
 	for i := range nodes {
@@ -259,6 +308,47 @@ func (a *App) fillActivity(ctx context.Context, wsID string, nodes []Node) error
 		}
 	}
 	return rows.Err()
+}
+
+// publishJourney re-sends every node whose Research Memory changed because these pages got new or newly linked
+// visits (pageID → start of the earliest such visit): the pages themselves, their journey neighbours, and the
+// page the user had open right before the new visit (its "next topic" may now point here).
+func (a *App) publishJourney(ctx context.Context, wsID, userID string, pages map[string]time.Time) {
+	if len(pages) == 0 {
+		return
+	}
+	seq, err := a.researchSequence(ctx, wsID)
+	if err != nil {
+		return
+	}
+	touched := map[string]bool{}
+	add := func(p *string) {
+		if p != nil {
+			touched[*p] = true
+		}
+	}
+	for pid, at := range pages {
+		touched[pid] = true
+		add(seq[pid].PrevPage)
+		add(seq[pid].NextPage)
+		if userID == "" {
+			continue
+		}
+		var before string
+		if a.db.QueryRow(ctx, `SELECT v.page_id FROM visits v WHERE v.workspace_id=$1 AND v.user_id=$2 AND v.started_at<$3
+			AND v.page_id IS NOT NULL AND v.page_id<>$4
+			AND EXISTS (SELECT 1 FROM nodes n WHERE n.page_id=v.page_id AND n.type='page' AND n.deleted_at IS NULL AND n.status<>'inbox')
+			ORDER BY v.started_at DESC LIMIT 1`, wsID, userID, at, pid).Scan(&before) == nil {
+			touched[before] = true
+		}
+	}
+	for pid := range touched {
+		var nid string
+		if a.db.QueryRow(ctx, `SELECT id FROM nodes WHERE page_id=$1 AND deleted_at IS NULL LIMIT 1`, pid).Scan(&nid) == nil {
+			a.publishNode(ctx, "node.updated", nid, nil)
+		}
+	}
+	slog.Info("[MEMORY] research journey refreshed", "workspace_id", wsID, "pages", len(pages), "nodes_sent", len(touched))
 }
 
 func (a *App) loadEdge(ctx context.Context, id string) (*Edge, error) {

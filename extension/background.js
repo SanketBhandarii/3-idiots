@@ -123,8 +123,11 @@ async function handleExternal(msg, sender) {
       return { ok: true };
     case "START_TRACKING": {
       const ws = await api("GET", "/workspaces").then((l) => l.find((w) => w.id === msg.workspace_id)).catch(() => null);
+      // Re-sent when the web app reloads during the same session: keep the captured cache instead of wiping it.
+      const prev = await state();
+      const same = prev.tracking && prev.workspaceId === msg.workspace_id && prev.sessionId === msg.session_id;
       await set({ tracking: true, paused: false, workspaceId: msg.workspace_id, sessionId: msg.session_id,
-        blocklist: ws?.settings?.blocklist || [], minDwell: ws?.settings?.min_dwell_seconds || 8, captured: {} });
+        blocklist: ws?.settings?.blocklist || [], minDwell: ws?.settings?.min_dwell_seconds || 8, captured: same ? prev.captured || {} : {} });
       notifyTracking();
       // Give the user a fresh normal tab to research in. chrome://newtab is not http(s), so it is never captured itself.
       let openedTabId = null;
@@ -138,9 +141,9 @@ async function handleExternal(msg, sender) {
       checkActiveTab();
       return { ok: true, tab_id: openedTabId };
     }
-    case "PAUSE_TRACKING": await set({ paused: true }); await endVisit(); notifyTracking(); return { ok: true };
+    case "PAUSE_TRACKING": await set({ paused: true }); await serial(async () => { await endVisit(); await cancelDwell(); }); notifyTracking(); return { ok: true };
     case "RESUME_TRACKING": await set({ paused: false }); notifyTracking(); checkActiveTab(); return { ok: true };
-    case "STOP_TRACKING": await endVisit(); await flushVisits(); await flushOutbox(); await sset({ dwell: null }); await set({ tracking: false, paused: false, sessionId: null }); notifyTracking(); return { ok: true };
+    case "STOP_TRACKING": await serial(async () => { await endVisit(); await cancelDwell(); }); await flushVisits(); await flushOutbox(); await set({ tracking: false, paused: false, sessionId: null }); notifyTracking(); return { ok: true };
     case "GET_OPEN_TABS": {
       const tabs = (await chrome.tabs.query({})).filter((t) => isHttp(t.url) && !t.incognito);
       sendTabsState();
@@ -224,6 +227,9 @@ async function sendTabsState() {
 
 /* ---------------- time tracking: visits while tab active + window focused + user not idle */
 async function startVisit(tab) {
+  const { visit } = await sget("visit");
+  // Repeated events for the page already being visited (load events, SPA title updates) must not split the visit.
+  if (visit && tab && visit.tab_id === tab.id && normalizeUrl(visit.url) === normalizeUrl(tab.url || "")) return;
   await endVisit();
   if (!tab || !(await allowed(tab.url, tab))) return;
   await sset({ visit: { url: tab.url, tab_id: tab.id, started_at: new Date().toISOString() } });
@@ -248,31 +254,74 @@ async function flushVisits() {
 }
 
 /* ---------------- capture */
-async function checkActiveTab() {
+// Browser events arrive in bursts (onUpdated fires several times per load; onCommitted/onHistoryStateUpdated/onUpdated
+// all report one navigation). Every state transition runs through one queue so handlers never interleave their
+// storage read-modify-writes, and a burst collapses into a single active-tab check.
+let queue = Promise.resolve();
+const serial = (fn) => (queue = queue.then(fn).catch((e) => console.warn("[EXTENSION] state update failed", e?.message || e)));
+let checkQueued = false;
+function checkActiveTab() {
+  if (checkQueued) return queue;
+  checkQueued = true;
+  return serial(() => { checkQueued = false; return doCheckActiveTab(); });
+}
+function armDwell(due) {
   clearTimeout(dwellTimer);
+  dwellTimer = setTimeout(() => serial(checkDwell), Math.max(0, due - Date.now()) + 50);
+}
+async function cancelDwell() {
+  clearTimeout(dwellTimer);
+  await sset({ dwell: null });
+}
+const capturing = new Set(); // normalized URLs with a capture request in flight
+
+async function doCheckActiveTab() {
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   await startVisit(tab);
-  if (!tab || tab.status !== "complete" || !(await allowed(tab.url, tab))) return;
+  if (!tab || !(await allowed(tab.url, tab))) return cancelDwell();
   const s = await state();
   const search = searchOf(tab.url);
-  if (search) { captureSearch(tab, search); return; }
-  if ((s.captured || {})[normalizeUrl(tab.url)]) { snapshot(tab); await sset({ dwell: null }); return; }
-  const ms = (s.minDwell || 8) * 1000;
+  if (search) { await cancelDwell(); captureSearch(tab, search); return; }
+  const norm = normalizeUrl(tab.url);
+  if ((s.captured || {})[norm] || capturing.has(norm)) { await cancelDwell(); if (tab.status === "complete") snapshot(tab); return; }
+  const { dwell } = await sget("dwell");
+  // Same page still pending: keep its deadline. Restarting it on every load/title event is what kept slow or
+  // chatty pages (YouTube, Reddit, ad-heavy sites) from ever reaching the dwell time.
+  if (dwell && dwell.tabId === tab.id && normalizeUrl(dwell.url) === norm) { armDwell(dwell.due); return; }
+  // The clock starts when the page is committed and shown, not when every subresource finished loading.
   // The due time is persisted so a service-worker restart does not lose the pending capture.
-  await sset({ dwell: { tabId: tab.id, url: tab.url, due: Date.now() + ms } });
-  dwellTimer = setTimeout(checkDwell, ms + 50);
+  const due = Date.now() + (s.minDwell || 8) * 1000;
+  await sset({ dwell: { tabId: tab.id, url: tab.url, due } });
+  console.info("[EXTENSION] dwell started", { tab_id: tab.id, seconds: s.minDwell || 8 });
+  armDwell(due);
 }
 async function checkDwell() {
   const { dwell } = await sget("dwell");
   if (!dwell || Date.now() < dwell.due) return;
-  await sset({ dwell: null });
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   // Still the same page, still active + focused, user not idle -> dwell satisfied.
-  if (!tab || tab.id !== dwell.tabId || normalizeUrl(tab.url) !== normalizeUrl(dwell.url)) return;
+  if (!tab || tab.id !== dwell.tabId || normalizeUrl(tab.url) !== normalizeUrl(dwell.url)) return cancelDwell();
   const win = await chrome.windows.get(tab.windowId).catch(() => null);
-  if (!win?.focused) return;
-  if ((await chrome.idle.queryState(60)) !== "active") return;
-  capturePage(tab.id, "link");
+  if (!win?.focused) return cancelDwell();
+  if ((await chrome.idle.queryState(60)) !== "active") return cancelDwell();
+  // Dwell is satisfied but the page is still loading: give it a few more seconds so extraction sees the content.
+  if (tab.status !== "complete" && (dwell.waits || 0) < 5) {
+    const due = Date.now() + 1500;
+    await sset({ dwell: { ...dwell, due, waits: (dwell.waits || 0) + 1 } });
+    return armDwell(due);
+  }
+  await cancelDwell();
+  console.info("[EXTENSION] dwell satisfied", { tab_id: tab.id });
+  capturePage(tab.id, "link"); // not awaited: extraction + upload must not hold up navigation handling
+}
+
+// One handler for every top-frame URL change (full navigation or SPA history.pushState/replaceState).
+// lastUrl[tabId] = the previous page in this tab, lastUrl.cur[tabId] = the current one.
+async function noteNavigation(tabId, url) {
+  const { lastUrl = {} } = await sget("lastUrl");
+  const cur = lastUrl.cur || {};
+  if (cur[tabId] && normalizeUrl(cur[tabId]) === normalizeUrl(url)) return; // same page (fragment/tracking change)
+  await sset({ lastUrl: { ...lastUrl, [tabId]: cur[tabId], cur: { ...cur, [tabId]: url } } });
 }
 
 async function captureSearch(tab, search) {
@@ -318,6 +367,14 @@ async function capturePage(tabId, transition) {
   if (!tab || !(await allowed(tab.url, tab))) return;
   const [active] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   if (transition !== "manual" && active?.id !== tabId) return; // user left before the dwell time
+  const norm = normalizeUrl(tab.url);
+  if (capturing.has(norm)) return; // same page already being sent (e.g. dwell + Alt+Shift+A together)
+  capturing.add(norm);
+  try { await sendCapture(tab, tabId, transition); } finally { capturing.delete(norm); }
+}
+async function sendCapture(tab, tabId, transition) {
+  const t0 = Date.now();
+  console.info("[EXTENSION] capture started", { tab_id: tabId, transition });
   let page = { title: tab.title, text: "", meta: {}, links: [] };
   try {
     await chrome.scripting.executeScript({ target: { tabId }, files: ["vendor/Readability.js"] }).catch(() => {});
@@ -330,7 +387,7 @@ async function capturePage(tabId, transition) {
     if (op?.url) { opener_url = op.url; search_query = searchOf(op.url)?.query || null; }
   }
   const { lastUrl = {} } = await sget("lastUrl");
-  if (!opener_url && lastUrl[tabId] && lastUrl[tabId] !== tab.url) { opener_url = lastUrl[tabId]; search_query = searchOf(opener_url)?.query || null; }
+  if (!opener_url && lastUrl[tabId] && normalizeUrl(lastUrl[tabId]) !== normalizeUrl(tab.url)) { opener_url = lastUrl[tabId]; search_query = searchOf(opener_url)?.query || null; }
   const s = await state();
   try {
     const res = await sendOrQueue("POST", "/capture/page", {
@@ -340,7 +397,7 @@ async function capturePage(tabId, transition) {
     });
     if (!res) return; // queued; delivered by the next flush
     await rememberCaptured(tab.url, res.page_id);
-    console.info("[EXTENSION] page captured", { node_id: res.node_id, page_id: res.page_id, is_new: res.is_new });
+    console.info("[EXTENSION] capture sent", { node_id: res.node_id, page_id: res.page_id, is_new: res.is_new, ms: Date.now() - t0, chars: page.text?.length || 0 });
     snapshot(tab, res.page_id);
   } catch (e) { console.warn("[EXTENSION] capture rejected", e.message); }
 }
@@ -386,31 +443,38 @@ async function shrink(dataUrl, width) {
 
 /* ---------------- browser events */
 chrome.tabs.onActivated.addListener(() => { checkActiveTab(); sendTabsState(); });
-chrome.tabs.onRemoved.addListener(() => { endVisit(); sendTabsState(); });
-chrome.tabs.onUpdated.addListener(async (tabId, info, tab) => {
-  if (info.url) {
-    const { lastUrl = {} } = await sget("lastUrl");
-    if (lastUrl[tabId] !== tab.url) await sset({ lastUrl: { ...lastUrl, [tabId]: lastUrl.cur?.[tabId] || lastUrl[tabId], cur: { ...(lastUrl.cur || {}), [tabId]: tab.url } } });
-  }
-  if (info.status === "complete" && tab.active) { checkActiveTab(); sendTabsState(); }
+chrome.tabs.onRemoved.addListener(() => { serial(endVisit); sendTabsState(); });
+chrome.tabs.onUpdated.addListener((tabId, info, tab) => {
+  // URL change (incl. SPA) or load finished on the visible tab: one coalesced check; same-URL repeats are no-ops.
+  if ((info.url || info.status === "complete") && tab.active) checkActiveTab();
+  if (info.status === "complete") sendTabsState();
 });
-chrome.webNavigation.onCommitted.addListener(async (d) => {
+const onTopFrameNav = (d) => {
   if (d.frameId !== 0) return;
-  const { lastUrl = {} } = await sget("lastUrl");
-  const prev = lastUrl.cur?.[d.tabId];
-  await sset({ lastUrl: { ...lastUrl, [d.tabId]: prev, cur: { ...(lastUrl.cur || {}), [d.tabId]: d.url } } });
+  serial(() => noteNavigation(d.tabId, d.url));
+  checkActiveTab();
+};
+chrome.webNavigation.onCommitted.addListener(onTopFrameNav);
+// SPA navigations (history.pushState/replaceState: YouTube video → video, Reddit, GitHub, docs sites) do not commit
+// a new document and do not always produce a tabs.onUpdated "complete", so they need this event to start a new dwell.
+chrome.webNavigation.onHistoryStateUpdated.addListener(onTopFrameNav);
+chrome.windows.onFocusChanged.addListener((w) => {
+  if (w === chrome.windows.WINDOW_ID_NONE) serial(async () => { await endVisit(); await cancelDwell(); });
+  else checkActiveTab();
 });
-chrome.windows.onFocusChanged.addListener((w) => { if (w === chrome.windows.WINDOW_ID_NONE) endVisit(); else checkActiveTab(); });
 chrome.idle.setDetectionInterval(60);
-chrome.idle.onStateChanged.addListener((st) => { if (st === "active") checkActiveTab(); else endVisit(); });
+chrome.idle.onStateChanged.addListener((st) => {
+  if (st === "active") checkActiveTab();
+  else serial(async () => { await endVisit(); await cancelDwell(); });
+});
 
 chrome.alarms.get("flush").then((al) => { if (!al) chrome.alarms.create("flush", { periodInMinutes: 0.5 }); });
-checkDwell(); // resume a pending dwell after a worker restart
+serial(async () => { const { dwell } = await sget("dwell"); if (dwell) armDwell(dwell.due); }); // resume after a worker restart
 chrome.alarms.onAlarm.addListener(async (a) => {
   if (a.name !== "flush") return;
   await flushVisits();
   await flushOutbox();
-  await checkDwell();
+  await serial(checkDwell);
   const [tab] = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
   if (tab && (await allowed(tab.url, tab))) snapshot(tab);
 });
@@ -440,7 +504,12 @@ chrome.commands.onCommand.addListener(async (cmd, tab) => {
   tab = tab || (await chrome.tabs.query({ active: true, lastFocusedWindow: true }))[0];
   if (cmd === "add-page" && tab) capturePage(tab.id, "manual");
   if (cmd === "go-live" && tab) goLive(tab);
-  if (cmd === "pause") { const s = await state(); await set({ paused: !s.paused }); if (!s.paused) endVisit(); notifyTracking(); }
+  if (cmd === "pause") {
+    const s = await state();
+    await set({ paused: !s.paused });
+    if (!s.paused) serial(async () => { await endVisit(); await cancelDwell(); }); else checkActiveTab();
+    notifyTracking();
+  }
 });
 
 // Live video: the shortcut/menu click grants activeTab for this tab, which tabCapture requires.

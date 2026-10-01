@@ -390,6 +390,16 @@ func (p *Pipeline) memory(ctx context.Context, wsID, nodeID, pageID string, u un
 		return err
 	}
 	slog.Info("[GO] Agent 3 research memory saved", "node_id", nodeID, "session_id", sessionID, "visits", visits, "time_spent_ms", spentMs)
+	// Neighbours show this page's topic (main_concept) as their previous/next topic: refresh them now it is known.
+	var firstVisit *time.Time
+	_ = a.db.QueryRow(ctx, `SELECT min(started_at) FROM visits WHERE page_id=$1`, pageID).Scan(&firstVisit)
+	if firstVisit != nil {
+		uid := ""
+		if userID != nil {
+			uid = *userID
+		}
+		a.publishJourney(ctx, wsID, uid, map[string]time.Time{pageID: *firstVisit})
+	}
 	if sessionID != nil {
 		if s, err := a.loadSession(ctx, *sessionID); err == nil {
 			a.publish(wsID, "session.updated", nil, s)
@@ -414,6 +424,7 @@ type candidate struct {
 	Similarity float64  `json:"similarity"`
 	IsOpener   bool     `json:"is_opener"`
 	Linked     bool     `json:"linked"`
+	IsPrevious bool     `json:"is_previous"` // researched right before this page in the same session (time order only)
 }
 
 type placeOut struct {
@@ -453,6 +464,23 @@ func (p *Pipeline) connect(ctx context.Context, wsID, nodeID, pageID string, u u
 			}
 		}
 		rows.Close()
+	}
+	// Research context: the page captured right before this one in the same tracking session. Time order alone is
+	// not a relationship, so it is only offered to Agent 2 (scored on content, no structure bonus), never auto-linked.
+	var prev candidate
+	if a.db.QueryRow(ctx, `WITH me AS (SELECT session_id, first_accessed_at FROM session_references WHERE page_id=$3 ORDER BY first_accessed_at DESC LIMIT 1)
+		SELECT n.id, n.type, n.title, coalesce(p.summary,''), coalesce(p.topics,'[]'::jsonb),
+			coalesce(1 - (p.embedding <=> (SELECT embedding FROM pages WHERE id=$3)), 0)
+		FROM me JOIN session_references r ON r.session_id=me.session_id AND r.first_accessed_at < me.first_accessed_at
+		JOIN pages p ON p.id=r.page_id JOIN nodes n ON n.page_id=p.id AND n.type='page' AND n.deleted_at IS NULL AND n.status<>'inbox'
+		WHERE n.workspace_id=$1 AND n.id<>$2 ORDER BY r.first_accessed_at DESC LIMIT 1`, wsID, nodeID, pageID).
+		Scan(&prev.ID, &prev.Type, &prev.Title, &prev.Summary, &prev.Topics, &prev.Similarity) == nil {
+		if ex, ok := cands[prev.ID]; ok {
+			ex.IsPrevious = true
+		} else {
+			prev.IsPrevious = true
+			cands[prev.ID] = &prev
+		}
 	}
 	var linkedURLs []string
 	_ = a.db.QueryRow(ctx, `SELECT coalesce(ARRAY(SELECT jsonb_array_elements_text(outgoing_links)), '{}') FROM pages WHERE id=$1`, pageID).Scan(&linkedURLs)
@@ -526,7 +554,29 @@ func (p *Pipeline) connect(ctx context.Context, wsID, nodeID, pageID string, u u
 	for _, c := range cands {
 		list = append(list, c)
 	}
-	slog.Info("[GO] candidates retrieved", "node_id", nodeID, "count", len(list))
+	// Agent 2 reads at most 8 candidates: keep navigation/research context first, then the most similar,
+	// instead of Go's random map order (which could drop the opener before the AI ever saw it).
+	rank := func(c *candidate) int {
+		switch {
+		case c.IsOpener:
+			return 0
+		case c.IsPrevious:
+			return 1
+		case c.Linked:
+			return 2
+		}
+		return 3
+	}
+	sort.SliceStable(list, func(i, j int) bool {
+		if ri, rj := rank(list[i]), rank(list[j]); ri != rj {
+			return ri < rj
+		}
+		return list[i].Similarity > list[j].Similarity
+	})
+	if len(list) > 8 {
+		list = list[:8]
+	}
+	slog.Info("[GO] candidates retrieved", "node_id", nodeID, "count", len(list), "has_opener", opener != nil, "has_previous", prev.ID != "")
 	slog.Info("[AI] Agent 2 started", "node_id", nodeID)
 	var out placeOut
 	// Retried on 429 like Agent 1: a rate limit is temporary, and the similarity-only fallback loses the explained relations.

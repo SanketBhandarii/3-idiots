@@ -17,7 +17,7 @@ type ExtMessage =
   | { type: "CLOSE_SAVED_TABS"; urls: string[] }
   | { type: "REQUEST_LIVE_VIDEO"; url: string }
   | { type: "ENABLE_INTERACTIVE_EMBED"; url: string }
-  | { type: "START_TRACKING"; workspace_id: string; session_id: string }
+  | { type: "START_TRACKING"; workspace_id: string; session_id: string; open_tab?: boolean }
   | { type: "PAUSE_TRACKING" }
   | { type: "RESUME_TRACKING" }
   | { type: "STOP_TRACKING" }
@@ -128,8 +128,9 @@ export const extensionBridge = {
     return ok;
   },
   enableEmbed: (url: string) => (useExtensionStore.getState().connected ? void call({ type: "ENABLE_INTERACTIVE_EMBED", url }) : undefined),
-  startTracking: (workspaceId: string, sessionId: string) =>
-    send({ type: "START_TRACKING", workspace_id: workspaceId, session_id: sessionId }, "tracking started."),
+  /** openTab=false when re-attaching to a session that is already running (page reload), so no extra tab opens. */
+  startTracking: (workspaceId: string, sessionId: string, openTab = true) =>
+    send({ type: "START_TRACKING", workspace_id: workspaceId, session_id: sessionId, open_tab: openTab }, "tracking started."),
   pauseTracking: () => void call({ type: "PAUSE_TRACKING" }),
   resumeTracking: () => void call({ type: "RESUME_TRACKING" }),
   stopTracking: () => void call({ type: "STOP_TRACKING" }),

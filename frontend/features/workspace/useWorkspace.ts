@@ -4,8 +4,8 @@
  * server event into the stores. Also persists the view state for exact resume (§F3).
  */
 import { useEffect, useRef } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { WsClientMessage, WsServerMessage } from "@/types/api";
+import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
+import type { GraphResponse, Session, WsClientMessage, WsServerMessage } from "@/types/api";
 import { conflictApi, radarApi, workspaceApi } from "@/lib/api";
 import { debounce } from "@/lib/utils/debounce";
 import { connectWorkspaceSocket, type WorkspaceSocket } from "@/lib/ws/socket";
@@ -19,6 +19,16 @@ import { useSessionStore } from "@/stores/session";
 import { useCollabStore, useSignalsStore } from "@/stores/collab";
 import { useAuthStore } from "@/stores/auth";
 import { qk } from "@/features/workspaces/hooks";
+
+/**
+ * Keeps the cached GET /graph (staleTime Infinity) and the workspace list in step with the tracking session.
+ * Without this, a remount after Stop (e.g. Report → back) re-hydrated the stale `active_session` and
+ * restarted tracking in the UI and the extension.
+ */
+export function syncCachedSession(qc: QueryClient, workspaceId: string, session: Session | null) {
+  qc.setQueriesData<GraphResponse>({ queryKey: ["graph", workspaceId] }, (g) => (g ? { ...g, workspace: { ...g.workspace, active_session: session } } : g));
+  void qc.invalidateQueries({ queryKey: qk.workspaces });
+}
 
 let socket: WorkspaceSocket | null = null;
 export function sendSocket(msg: WsClientMessage) {
@@ -48,7 +58,7 @@ export function useWorkspace(workspaceId: string) {
       const active = graph.data.workspace.active_session;
       useSessionStore.getState().setSession(active);
       if (API_MODE === "mock" && active?.state === "active" && !browsingSimulator.isRunning(workspaceId)) browsingSimulator.start(workspaceId, active.id);
-      if (API_MODE === "http") void connectExtension().then((ok) => ok && active && active.state !== "stopped" && extensionBridge.startTracking(workspaceId, active.id));
+      if (API_MODE === "http") void connectExtension().then((ok) => ok && active && active.state !== "stopped" && extensionBridge.startTracking(workspaceId, active.id, false));
       const jumpTo = new URLSearchParams(window.location.search).get("node");
       if (jumpTo) {
         useUiStore.getState().setViewMode("graph");
@@ -78,7 +88,11 @@ export function useWorkspace(workspaceId: string) {
           useCollabStore.getState().setPresence(msg.data.users);
           break;
         case "session.updated":
-          if (msg.data.user_id === myId()) useSessionStore.getState().setSession(msg.data.state === "stopped" ? null : msg.data);
+          if (msg.data.user_id === myId()) {
+            const s = msg.data.state === "stopped" ? null : msg.data;
+            useSessionStore.getState().setSession(s);
+            syncCachedSession(qc, workspaceId, s);
+          }
           void qc.invalidateQueries({ queryKey: qk.sessions(workspaceId) });
           break;
         case "conflict.detected":
@@ -113,8 +127,8 @@ export function useWorkspace(workspaceId: string) {
       onMessage,
       onStatus: (s) => {
         useCollabStore.getState().setSocketStatus(s);
-        // Resync on (re)connect: events sent before this socket joined (e.g. an AI assistant adding sources right
-        // after the workspace opened, or while offline) are not replayed, so refetch the graph once.
+        // Resync on every (re)connect: the hub drops frames for disconnected/slow clients and does not replay events
+        // sent before this socket joined (e.g. an AI assistant adding sources right after the workspace opened).
         if (s === "open") void qc.invalidateQueries({ queryKey: ["graph", workspaceId] });
       },
     });

@@ -347,23 +347,29 @@ func (a *App) ingestPage(ctx context.Context, u *User, b capturePageReq, session
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
-	a.logEvent(ctx, b.WorkspaceID, &u.ID, "node_added", gin.H{"node_id": nodeID, "title": title})
-	a.touch(ctx, b.WorkspaceID)
+	// Show the node first; the AI pipeline and bookkeeping follow without delaying it.
 	if p, err := a.loadPage(ctx, pageID); err == nil {
 		a.publish(b.WorkspaceID, "page.created", &u.ID, p)
 	}
 	a.publishNode(ctx, "node.created", nodeID, &u.ID)
-	if session != nil {
-		if s, err := a.loadSession(ctx, session.ID); err == nil {
-			a.publish(b.WorkspaceID, "session.updated", nil, s)
+	a.pipeline.enqueue(nodeID)
+	// ctx may be the request's gin.Context (pooled after the handler returns), so use a fresh context here.
+	go func() {
+		bg, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		a.logEvent(bg, b.WorkspaceID, &u.ID, "node_added", gin.H{"node_id": nodeID, "title": title})
+		a.touch(bg, b.WorkspaceID)
+		if session != nil {
+			if s, err := a.loadSession(bg, session.ID); err == nil {
+				a.publish(b.WorkspaceID, "session.updated", nil, s)
+			}
 		}
-	}
+	}()
 	sid := ""
 	if session != nil {
 		sid = session.ID
 	}
 	slog.Info("[GO] node created", "workspace_id", b.WorkspaceID, "session_id", sid, "node_id", nodeID, "page_id", pageID, "via", via)
-	a.pipeline.enqueue(nodeID)
 	return gin.H{"node_id": nodeID, "page_id": pageID, "is_new": true}, nil
 }
 

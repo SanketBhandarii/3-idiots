@@ -392,6 +392,7 @@ func (a *App) removeMember(c *gin.Context) error {
 	if tag.RowsAffected() == 0 {
 		return httpx.Forbidden("The owner cannot be removed")
 	}
+	a.hub.Kick(id, uid)
 	c.Status(204)
 	return nil
 }
@@ -500,9 +501,32 @@ func (a *App) disableShareLink(c *gin.Context) error {
 	if _, err := a.requireWS(c, c.Param("id"), "owner"); err != nil {
 		return err
 	}
-	if _, err := a.db.Exec(c, `UPDATE share_links SET disabled_at=now() WHERE id=$1 AND workspace_id=$2`, c.Param("linkId"), c.Param("id")); err != nil {
+	wsID, linkID := c.Param("id"), c.Param("linkId")
+	tx, err := a.db.Begin(c)
+	if err != nil {
 		return err
 	}
+	defer tx.Rollback(c)
+	if _, err := tx.Exec(c, `UPDATE share_links SET disabled_at=now() WHERE id=$1 AND workspace_id=$2`, linkID, wsID); err != nil {
+		return err
+	}
+	// Revoke only the access this link granted; other links and directly added members are untouched.
+	rows, err := tx.Query(c, `DELETE FROM workspace_members WHERE workspace_id=$1 AND share_link_id=$2 AND role<>'owner' RETURNING user_id`, wsID, linkID)
+	if err != nil {
+		return err
+	}
+	var revoked []string
+	for rows.Next() {
+		var uid string
+		if rows.Scan(&uid) == nil {
+			revoked = append(revoked, uid)
+		}
+	}
+	rows.Close()
+	if err := tx.Commit(c); err != nil {
+		return err
+	}
+	a.hub.Kick(wsID, revoked...)
 	c.Status(204)
 	return nil
 }
@@ -510,10 +534,10 @@ func (a *App) disableShareLink(c *gin.Context) error {
 func (a *App) join(c *gin.Context) error {
 	u := currentUser(c)
 	sum := sha256.Sum256([]byte(c.Param("token")))
-	var wsID, role string
+	var linkID, wsID, role string
 	var exp, disabled *time.Time
-	err := a.db.QueryRow(c, `SELECT workspace_id,role,expires_at,disabled_at FROM share_links WHERE token_hash=$1`, hex.EncodeToString(sum[:])).
-		Scan(&wsID, &role, &exp, &disabled)
+	err := a.db.QueryRow(c, `SELECT id,workspace_id,role,expires_at,disabled_at FROM share_links WHERE token_hash=$1`, hex.EncodeToString(sum[:])).
+		Scan(&linkID, &wsID, &role, &exp, &disabled)
 	if errors.Is(err, pgx.ErrNoRows) || disabled != nil {
 		return httpx.NotFound("Invite link")
 	}
@@ -526,13 +550,22 @@ func (a *App) join(c *gin.Context) error {
 	var existing string
 	_ = a.db.QueryRow(c, `SELECT role FROM workspace_members WHERE workspace_id=$1 AND user_id=$2`, wsID, u.ID).Scan(&existing)
 	if existing == "" {
-		if _, err := a.db.Exec(c, `INSERT INTO workspace_members (workspace_id,user_id,role) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`, wsID, u.ID, role); err != nil {
+		if _, err := a.db.Exec(c, `INSERT INTO workspace_members (workspace_id,user_id,role,share_link_id) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`, wsID, u.ID, role, linkID); err != nil {
 			return err
 		}
 		_, _ = a.db.Exec(c, `INSERT INTO branches (workspace_id,kind,owner_id,name,color)
 			SELECT $1,'personal',$2,$3,$4 WHERE NOT EXISTS (SELECT 1 FROM branches WHERE workspace_id=$1 AND owner_id=$2)`,
 			wsID, u.ID, firstName(u.Name)+"'s branch", u.AvatarColor)
 		a.logEvent(c, wsID, &u.ID, "member_joined", gin.H{"role": role})
+		existing = role
+	} else if roleRank[role] > roleRank[existing] {
+		// A viewer opening a valid editor link becomes an editor (never a downgrade, never touches the owner).
+		// The membership now belongs to the editor link, so disabling the old viewer link does not remove it.
+		if _, err := a.db.Exec(c, `UPDATE workspace_members SET role=$3, share_link_id=$4 WHERE workspace_id=$1 AND user_id=$2 AND role<>'owner'`,
+			wsID, u.ID, role, linkID); err != nil {
+			return err
+		}
+		a.logEvent(c, wsID, &u.ID, "member_role_changed", gin.H{"role": role})
 		existing = role
 	}
 	c.JSON(200, gin.H{"workspace_id": wsID, "role": existing})

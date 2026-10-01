@@ -27,6 +27,7 @@ type client struct {
 	send     chan []byte
 	selected *string
 	lastMove time.Time
+	cancel   context.CancelFunc
 }
 
 // Hub keeps one in-memory room per workspace (single Go instance, as the spec allows).
@@ -71,6 +72,24 @@ func (h *Hub) broadcastExcept(wsID string, skip *client, m Message) {
 			}
 		}
 	}
+}
+
+// Kick closes the live connections of users who lost access to a workspace (revoked link, removed member).
+func (h *Hub) Kick(wsID string, userIDs ...string) {
+	if len(userIDs) == 0 {
+		return
+	}
+	drop := map[string]bool{}
+	for _, id := range userIDs {
+		drop[id] = true
+	}
+	h.mu.RLock()
+	for c := range h.rooms[wsID] {
+		if drop[c.user.ID] && c.cancel != nil {
+			c.cancel()
+		}
+	}
+	h.mu.RUnlock()
 }
 
 func (h *Hub) join(c *client) {
@@ -131,8 +150,8 @@ func (a *App) serveWS(c *gin.Context) {
 		return
 	}
 	conn.SetReadLimit(64 * 1024)
-	cl := &client{user: u, wsID: wsID, send: make(chan []byte, 256)}
 	ctx, cancel := context.WithCancel(context.WithoutCancel(c.Request.Context()))
+	cl := &client{user: u, wsID: wsID, send: make(chan []byte, 256), cancel: cancel}
 	defer cancel()
 	a.hub.join(cl)
 	defer a.hub.leave(cl)

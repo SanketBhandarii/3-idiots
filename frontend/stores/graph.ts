@@ -199,6 +199,11 @@ export const useGraphStore = create<GraphState>((set, get) => ({
       case "page.analyzed":
       case "page.created":
         return s.upsertPage(msg.data);
+      case "preview.updated": {
+        // New server snapshot: bump preview_captured_at so the preview refetches it (instead of the og:image fallback).
+        const p = s.pages[msg.data.page_id];
+        return p ? s.upsertPage({ ...p, preview_captured_at: msg.data.captured_at }) : undefined;
+      }
       case "tags.updated":
         return s.setTags(msg.data);
       case "categories.updated":

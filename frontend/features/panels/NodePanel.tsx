@@ -3,7 +3,6 @@
 import { useMemo, useState } from "react";
 import * as Tabs from "@radix-ui/react-tabs";
 import {
-  ArrowSquareOut,
   ChatCircle,
   Check,
   Clock,
@@ -254,7 +253,6 @@ export function NodePanel({ nodeId, readOnly }: { nodeId: string; readOnly: bool
         <Button size="xs" variant="secondary" onClick={() => { useUiStore.getState().requestFocus(node.id); }}><Crosshair size={14} weight="bold" /> Zoom to</Button>
         <Button size="xs" variant="secondary" onClick={() => { useUiStore.getState().setFocusNode(node.id); useUiStore.getState().setViewMode("focus"); }}><MagnifyingGlass size={14} weight="bold" /> Focus</Button>
         {page && <Button size="xs" variant="secondary" onClick={() => extensionBridge.goToTab(page.url)}><SquaresFour size={14} weight="bold" /> Go to tab</Button>}
-        {page && <Button size="xs" variant="secondary" onClick={() => extensionBridge.openUrl(page.url)}><ArrowSquareOut size={14} weight="bold" /> Open</Button>}
         {!readOnly && <Button size="xs" variant="ghost" className="text-danger" onClick={() => void deleteNodes([node.id])}><Trash size={14} weight="bold" /> Delete</Button>}
       </div>
 

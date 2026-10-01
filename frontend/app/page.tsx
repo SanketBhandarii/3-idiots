@@ -2,7 +2,7 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { Reorder } from "motion/react";
+import { motion, Reorder } from "motion/react";
 import {
   ArrowRight,
   Play,
@@ -14,6 +14,9 @@ import {
   ShieldWarning,
   Warning,
   Heart,
+  Lightning,
+  Path,
+  ShieldCheck,
 } from "@phosphor-icons/react";
 import { useAuthStore } from "@/stores/auth";
 import { toast } from "@/lib/toast";
@@ -173,15 +176,24 @@ export default function LandingPage() {
         <div className="flex flex-col lg:flex-row items-center justify-center gap-12 xl:gap-20">
 
           {/* Left Column: Bold Chunky Headline & Buttons */}
-          <div className="max-w-xl shrink-0 space-y-6 text-left">
-            <h1 className="font-display text-[48px] sm:text-[60px] lg:text-[66px] font-black leading-[1.04] tracking-tight text-[#1c1b2b]">
+          <div className="max-w-xl shrink-0 space-y-6 text-left lg:-mt-20 lg:max-w-[540px] xl:max-w-2xl">
+            <h1 className="font-display text-[44px] sm:text-[56px] lg:text-[48px] xl:text-[62px] font-black leading-[0.98] tracking-[-0.03em] text-[#1c1b2b] lg:whitespace-nowrap">
               Plan your<br />
-              own research.<br />
-              <span className="text-[#1c1b2b]">We handle</span><br />
-              <span className="relative inline-block">
-                <span className="relative z-10">the connections.</span>
-                <span className="absolute left-0 bottom-1.5 h-3.5 sm:h-4 w-full -rotate-1 bg-[#fad47f] z-0 rounded-sm" />
+              own{" "}
+              <span className="whitespace-nowrap">
+                <span className="relative inline-block">
+                  research
+                  <span className="absolute inset-x-0 -bottom-0.5 h-[6px] rounded-full bg-[#7b5cf0]" aria-hidden />
+                </span>
+                .
               </span>
+              <br />
+              <span className="relative inline-block">
+                <span className="relative z-10">We handle</span>
+                <span className="absolute left-0 bottom-1.5 h-3.5 sm:h-4 w-full -rotate-1 bg-[#fad47f] z-0 rounded-sm" aria-hidden />
+              </span>
+              <br />
+              the connections.
             </h1>
 
             {/* CTAs */}
@@ -189,21 +201,32 @@ export default function LandingPage() {
               <button
                 onClick={handleDemoLogin}
                 disabled={demoLoading}
-                className="inline-flex items-center gap-2.5 rounded-full bg-[#1c1b2b] px-7 py-3.5 text-sm font-bold text-white hover:bg-[#3a3850] transition cursor-pointer shadow-sm hover:shadow"
+                className="inline-flex items-center gap-2.5 rounded-full bg-[#1c1b2b] px-7 py-3.5 text-base font-bold text-white shadow-[4px_4px_0_#7b5cf0] transition hover:-translate-y-0.5 hover:shadow-[6px_6px_0_#7b5cf0] cursor-pointer"
               >
                 <ArrowRight size={16} weight="bold" /> {demoLoading ? "Opening…" : "Start researching"}
               </button>
               <Link
                 href="/workspaces"
-                className="inline-flex items-center gap-2.5 rounded-full border-2 border-[#1c1b2b] bg-white px-7 py-3.5 text-sm font-bold text-[#1c1b2b] hover:bg-[#f5f1e8] transition shadow-sm"
+                className="inline-flex items-center gap-2.5 rounded-full border-2 border-[#1c1b2b] bg-white px-7 py-3.5 text-base font-bold text-[#1c1b2b] shadow-[4px_4px_0_#1c1b2b] transition hover:-translate-y-0.5 hover:shadow-[6px_6px_0_#1c1b2b]"
               >
                 <Play size={14} weight="fill" /> Explore demo
               </Link>
             </div>
+
+            {/* Quick features */}
+            <ul className="flex flex-wrap items-center gap-x-6 gap-y-2 pt-2 text-[15px] font-medium text-[#4a4860]">
+              <li className="flex items-center gap-1.5"><Lightning size={17} weight="fill" className="text-[#e0a92e]" /> Builds while you browse</li>
+              <li className="flex items-center gap-1.5"><Path size={17} weight="bold" className="text-[#3f8a2e]" /> Explained connections</li>
+              <li className="flex items-center gap-1.5"><ShieldCheck size={17} weight="fill" className="text-[#7b5cf0]" /> Tracking is opt-in</li>
+            </ul>
           </div>
 
           {/* Right Column: Premium Hero Card with Moveable Tiles */}
-          <div className="relative w-full max-w-[370px] xl:max-w-[385px] shrink-0">
+          <motion.div
+            animate={{ y: [0, -12, 0] }}
+            transition={{ duration: 5, repeat: Infinity, ease: "easeInOut" }}
+            className="relative w-full max-w-[370px] xl:max-w-[385px] shrink-0"
+          >
 
             {/* Soft decorative background pastel blobs */}
             <div className="absolute -top-10 -left-10 h-44 w-36 rounded-[50px] bg-[#c6b5f6]/40 -rotate-12 -z-10 pointer-events-none" />
@@ -231,7 +254,13 @@ export default function LandingPage() {
             </div>
 
             {/* The Main Hero Card Container */}
-            <div className="rounded-[32px] border-[2.5px] border-[#1c1b2b] bg-white p-5 shadow-[0_20px_50px_-10px_rgba(28,27,43,0.18)]">
+            <motion.div
+              initial={{ opacity: 0, y: 28, rotate: 2 }}
+              animate={{ opacity: 1, y: 0, rotate: 0 }}
+              transition={{ type: "spring", stiffness: 110, damping: 16, delay: 0.1 }}
+              whileHover={{ y: -6, rotate: -0.6, boxShadow: "8px 8px 0 #1c1b2b" }}
+              className="rounded-[32px] border-[2.5px] border-[#1c1b2b] bg-white p-5 shadow-[0_20px_50px_-10px_rgba(28,27,43,0.18)]"
+            >
 
               {/* Card Header */}
               <div className="flex items-start justify-between pb-2">
@@ -245,7 +274,7 @@ export default function LandingPage() {
               </div>
 
               {/* ── Mini Connection Graph: Real-time Web Page Travel ── */}
-              <div className="relative h-[82px] w-full rounded-2xl bg-[#faf8f4] border border-[#e8e2d6] mb-2.5 overflow-hidden shadow-inner">
+              <div className="relative h-[82px] w-full rounded-2xl bg-[#faf8f4] mb-2.5 overflow-hidden">
                 {/* Subtle header badge */}
                 <div className="absolute top-1.5 left-2.5 z-10 flex items-center gap-1.5">
                   <span className="relative flex h-2 w-2">
@@ -376,11 +405,14 @@ export default function LandingPage() {
 
 
               <Reorder.Group axis="y" values={tiles} onReorder={setTiles} className="space-y-2 mt-1">
-                {tiles.map((item) => (
+                {tiles.map((item, i) => (
                   <Reorder.Item
+                    initial={{ opacity: 0, x: 24 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    transition={{ delay: 0.35 + i * 0.12, type: "spring", stiffness: 160, damping: 18 }}
                     key={item.id}
                     value={item}
-                    className={`group cursor-grab active:cursor-grabbing rounded-xl border border-[#e8e2d6] border-l-[3.5px] ${item.borderColor} bg-white px-3 py-2.5 transition hover:shadow-md select-none`}
+                    className={`group cursor-grab active:cursor-grabbing rounded-xl border border-[#e8e2d6] bg-white px-3 py-2.5 transition hover:shadow-md select-none`}
                     whileDrag={{ scale: 1.02, boxShadow: "0 8px 25px -8px rgba(28,27,43,0.25)" }}
                   >
                     <div className="flex items-center justify-between gap-2">
@@ -413,9 +445,9 @@ export default function LandingPage() {
               <div className="mt-2 h-1.5 w-full overflow-hidden rounded-full bg-[#e8e2d6]">
                 <div className="h-full w-3/4 rounded-full bg-gradient-to-r from-[#7b5cf0] via-[#f08a6c] to-[#d0e8ba] animate-pulse" />
               </div>
-            </div>
+            </motion.div>
 
-          </div>
+          </motion.div>
 
         </div>
       </section>

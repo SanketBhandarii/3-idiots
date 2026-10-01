@@ -352,9 +352,17 @@ async function snapshot(tab, pageId) {
   const s = await state();
   pageId = pageId || (s.captured || {})[normalizeUrl(tab.url)];
   if (!pageId || typeof pageId !== "string") return;
+  // captureVisibleTab shoots whatever tab is visible in the window. Only keep the image if this page's tab is
+  // still the visible, fully loaded tab before and after the shot; otherwise it would show another page.
+  const stillVisible = async () => {
+    const cur = await chrome.tabs.get(tab.id).catch(() => null);
+    return !!cur && cur.active && cur.status === "complete" && normalizeUrl(cur.url || "") === normalizeUrl(tab.url);
+  };
+  if (!(await stillVisible())) return;
   lastShot = Date.now();
   try {
     const raw = await chrome.tabs.captureVisibleTab(tab.windowId, { format: "jpeg", quality: 55 });
+    if (!(await stillVisible())) return;
     const image = await shrink(raw, 560);
     broadcast({ type: "SNAPSHOT", url: normalizeUrl(tab.url), page_id: pageId, image });
     const { lastUpload = {} } = await get("lastUpload");

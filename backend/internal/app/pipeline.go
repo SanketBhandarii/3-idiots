@@ -104,13 +104,14 @@ type Pipeline struct {
 	mu       sync.Mutex
 	inflight map[string]bool // queued or running; stops duplicate tab events from analyzing one node twice
 	attempts map[string]int  // Agent 1 failures per node in this process (restart resets; ai_stage<>'ready' is resumed)
+	extra    chan struct{}   // bounds background conflict/radar work started after a node is ready
 }
 
 // retryDelays: Agent 1 failures are retried in the background so a captured page is never stuck in "failed".
 var retryDelays = []time.Duration{30 * time.Second, 2 * time.Minute, 10 * time.Minute}
 
 func newPipeline(a *App) *Pipeline {
-	return &Pipeline{a: a, queue: make(chan string, 1000), inflight: map[string]bool{}, attempts: map[string]int{}}
+	return &Pipeline{a: a, queue: make(chan string, 1000), inflight: map[string]bool{}, attempts: map[string]int{}, extra: make(chan struct{}, 2)}
 }
 
 func (p *Pipeline) enqueue(nodeID string) {
@@ -339,10 +340,18 @@ func (p *Pipeline) process(ctx context.Context, nodeID string) {
 	p.mu.Unlock()
 	p.stage(ctx, nodeID, "ready", ", status='active'")
 
-	p.checkConflicts(ctx, wsID, nodeID, pageID)
-	if r, err := a.computeRadar(ctx, wsID); err == nil {
-		a.publish(wsID, "radar.updated", nil, r)
-	}
+	// The conflict check and radar refresh do not change this node or its edges, so they run off the worker
+	// slot: the next captured page starts Agent 1 → Agent 2 right away instead of queueing behind extra AI calls.
+	p.extra <- struct{}{}
+	go func() {
+		defer func() { <-p.extra }()
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		p.checkConflicts(ctx, wsID, nodeID, pageID)
+		if r, err := a.computeRadar(ctx, wsID); err == nil {
+			a.publish(wsID, "radar.updated", nil, r)
+		}
+	}()
 }
 
 // memory is Agent 3 (spec §14.4): plain Go, no AI. It ties the analysed page to its session (reference number,
@@ -519,8 +528,24 @@ func (p *Pipeline) connect(ctx context.Context, wsID, nodeID, pageID string, u u
 	slog.Info("[GO] candidates retrieved", "node_id", nodeID, "count", len(list))
 	slog.Info("[AI] Agent 2 started", "node_id", nodeID)
 	var out placeOut
-	err = a.agent.post(ctx, "/v1/place", gin.H{"page": gin.H{"title": u.MainConcept, "summary": u.Summary, "topics": u.Topics, "page_type": u.PageType},
-		"candidates": list, "existing_topics": topics}, &out)
+	// Retried on 429 like Agent 1: a rate limit is temporary, and the similarity-only fallback loses the explained relations.
+	for attempt := 0; attempt < 3; attempt++ {
+		err = a.agent.post(ctx, "/v1/place", gin.H{"page": gin.H{"title": u.MainConcept, "summary": u.Summary, "topics": u.Topics, "page_type": u.PageType},
+			"candidates": list, "existing_topics": topics}, &out)
+		var ae *agentError
+		if err == nil || !(errors.As(err, &ae) && ae.Status == 429) {
+			break
+		}
+		wait := time.Duration(3*(attempt+1)) * time.Second
+		if ae.RetryAfter > wait && ae.RetryAfter < 30*time.Second {
+			wait = ae.RetryAfter
+		}
+		slog.Warn("[AI] Agent 2 rate limited; retrying", "node_id", nodeID, "wait", wait.String())
+		select {
+		case <-ctx.Done():
+		case <-time.After(wait):
+		}
+	}
 	if err != nil {
 		slog.Warn("[AI] Agent 2 failed; using similarity only", "node_id", nodeID, "err", err)
 		out.Fallback = true

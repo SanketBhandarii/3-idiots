@@ -281,8 +281,10 @@ export function AddPageDialog({ workspaceId }: { workspaceId: string }) {
       footer={<><Button variant="ghost" onClick={close}>Cancel</Button><Button variant="primary" loading={busy} disabled={!valid} onClick={async () => {
         setBusy(true);
         try {
-          const r = await captureApi.page({ workspace_id: workspaceId, url, title: title || url, transition: "manual" });
-          toast.success(r.is_new ? "Page added" : "Page already in workspace", { description: r.is_new ? "Analyzing page…" : "Jumped to the existing node." });
+          // Empty title → the server uses the domain until Agent 1 fetches the real page title.
+          const r = await captureApi.page({ workspace_id: workspaceId, url: url.trim(), title: title.trim(), transition: "manual" });
+          if (r.is_new) toast.success("Page added", { description: "Analyzing page…" });
+          else toast.info("This page is already in your workspace.", { description: "Jumped to the existing node." });
           close(); setUrl(""); setTitle("");
           setTimeout(() => { useUiStore.getState().selectNode(r.node_id); useUiStore.getState().requestFocus(r.node_id); }, 300);
         } catch (e) { toast.apiError(e); } finally { setBusy(false); }

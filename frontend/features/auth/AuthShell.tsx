@@ -2,15 +2,13 @@
 /** Split authentication layout (DESIGN.md §6.2.3) with a product billboard. */
 import type { ReactNode } from "react";
 import { motion } from "motion/react";
-import { ChatCircleDots, Lightning, Path, ShieldCheck } from "@phosphor-icons/react";
 import { Logo } from "@/components/shell/Logo";
 import { Kicker } from "@/components/ui/primitives";
 
 export function AuthShell({ children }: { children: ReactNode }) {
   return (
     <div className="grid min-h-dvh lg:grid-cols-[1fr_1.05fr]">
-      <aside className="relative hidden overflow-hidden border-r-2 border-ink bg-lavender lg:block">
-        <div className="bg-speed absolute inset-0" aria-hidden />
+      <aside className="relative hidden overflow-hidden border-r-2 border-ink bg-gradient-to-br from-[#efe9ff] via-[#e8ebff] to-[#ddefff] lg:block">
         <div className="relative flex h-full flex-col justify-between p-10">
           <Logo href="/login" />
           <div>
@@ -23,10 +21,7 @@ export function AuthShell({ children }: { children: ReactNode }) {
               </span>
               .
             </h1>
-            <p className="mt-4 max-w-md text-[17px] font-medium text-ink-soft">
-              Press Start Tracking and browse normally. Pages appear as nodes, group into topics and connect — and every
-              connection explains <em>why</em>.
-            </p>
+            <MiniMapVisual />
           </div>
           <div className="relative h-56">
             <motion.div
@@ -54,24 +49,9 @@ export function AuthShell({ children }: { children: ReactNode }) {
               <p className="mt-1.5 text-sm font-semibold text-ink">Regulation appears under-covered in your workspace.</p>
             </motion.div>
           </div>
-          <ul className="grid grid-cols-2 gap-3 text-sm font-semibold text-ink">
-            {[
-              [Lightning, "Builds itself while you browse"],
-              [Path, "Explainable connections"],
-              [ChatCircleDots, "Notes, tags & team branches"],
-              [ShieldCheck, "Tracking is opt-in"],
-            ].map(([I, t]) => {
-              const Icon = I as typeof Lightning;
-              return (
-                <li key={t as string} className="flex items-center gap-2">
-                  <Icon size={18} weight="duotone" /> {t as string}
-                </li>
-              );
-            })}
-          </ul>
         </div>
       </aside>
-      <main className="flex flex-col px-4 py-8 sm:px-6">
+      <main className="flex flex-col px-4 py-8 sm:px-6 lg:pt-28">
         <div className="lg:hidden">
           <Logo href="/login" />
         </div>
@@ -85,5 +65,41 @@ export function AuthShell({ children }: { children: ReactNode }) {
         </motion.div>
       </main>
     </div>
+  );
+}
+
+/** Small knowledge-graph illustration: a browser page becomes a node and connects to related research. */
+function MiniMapVisual() {
+  // Widths leave room for the bold display font (~8.5px per character at 12px) plus the dot and padding.
+  const nodes = [
+    { x: 0, y: 52, w: 128, label: "Browser tab", fill: "#ffffff" },
+    { x: 162, y: 10, w: 112, label: "Page node", fill: "#fef3d6" },
+    { x: 162, y: 96, w: 112, label: "Paper", fill: "#d0e8ba" },
+    { x: 310, y: 52, w: 88, label: "Topic", fill: "#c6b5f6" },
+  ];
+  const mid = (i: number) => ({ x: nodes[i]!.x + nodes[i]!.w / 2, y: nodes[i]!.y + 15 });
+  const links: [number, number][] = [[0, 1], [0, 2], [1, 3], [2, 3], [1, 2]];
+  return (
+    <motion.svg
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: 0.1, duration: 0.5 }}
+      viewBox="0 0 400 140"
+      className="mt-8 w-full max-w-md overflow-visible"
+      role="img"
+      aria-label="A browser tab becoming connected research nodes"
+    >
+      {links.map(([a, b]) => (
+        <line key={`${a}-${b}`} x1={mid(a).x} y1={mid(a).y} x2={mid(b).x} y2={mid(b).y} stroke="#1c1b2b" strokeWidth={2} strokeDasharray={a === 1 && b === 2 ? "5 5" : undefined} />
+      ))}
+      {nodes.map((n) => (
+        <g key={n.label}>
+          <rect x={n.x + 3} y={n.y + 3} width={n.w} height={30} rx={15} fill="#1c1b2b" />
+          <rect x={n.x} y={n.y} width={n.w} height={30} rx={15} fill={n.fill} stroke="#1c1b2b" strokeWidth={2} />
+          <circle cx={n.x + 15} cy={n.y + 15} r={4} fill="#7b5cf0" />
+          <text x={n.x + 25} y={n.y + 19.5} fontSize={12} fontWeight={700} fill="#1c1b2b">{n.label}</text>
+        </g>
+      ))}
+    </motion.svg>
   );
 }

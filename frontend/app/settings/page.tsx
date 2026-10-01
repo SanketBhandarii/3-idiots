@@ -57,7 +57,7 @@ function Settings() {
   const { connected, simulated, setConnected, setSimulated } = useExtensionStore();
   const tokens = useQuery({ queryKey: ["tokens"], queryFn: tokensApi.list });
   const [fresh, setFresh] = useState<CreatedToken | null>(null);
-  const create = useMutation({ mutationFn: (k: "extension" | "mcp") => tokensApi.create(k, k === "mcp" ? "Claude Desktop" : "Chrome extension"), onSuccess: (t) => { setFresh(t); void qc.invalidateQueries({ queryKey: ["tokens"] }); toast.success("Token created", { description: "Copy it now — it is shown once." }); }, onError: (e) => toast.apiError(e) });
+  const create = useMutation({ mutationFn: (k: "extension" | "mcp") => tokensApi.create(k, k === "mcp" ? "AI Assistant (MCP)" : "Chrome extension"), onSuccess: (t) => { setFresh(t); void qc.invalidateQueries({ queryKey: ["tokens"] }); toast.success("Token created", { description: "Copy it now — it is shown once." }); }, onError: (e) => toast.apiError(e) });
   const revoke = useMutation({ mutationFn: tokensApi.revoke, onSuccess: () => { void qc.invalidateQueries({ queryKey: ["tokens"] }); toast.info("Token revoked"); } });
   const mcpUrl = `${typeof window !== "undefined" ? window.location.origin : "http://localhost:3000"}${API_BASE_URL}/mcp`;
 
@@ -78,13 +78,20 @@ function Settings() {
         </Card>
 
         <Card className="p-6">
-          <div className="flex items-center gap-3"><ArtTile icon={Robot} tone="purple" /><div><h2 className="text-lg font-bold">Connect an AI assistant (MCP)</h2><p className="text-sm text-muted">Claude and other MCP tools can search your workspaces and add sources — into the “AI Agent” branch for your review.</p></div></div>
+          <div className="flex items-center gap-3"><ArtTile icon={Robot} tone="purple" /><div><h2 className="text-lg font-bold">Connect an AI assistant (MCP)</h2><p className="text-sm text-muted">Any MCP-compatible AI assistant (Gemini CLI, Cursor, VS Code Cline, or Claude) can search your workspaces and add research nodes — directly into the “AI Agent” branch for your review.</p></div></div>
           <Button variant="purple" size="sm" className="mt-4" loading={create.isPending} onClick={() => create.mutate("mcp")}>Create MCP token</Button>
           {fresh && (
-            <div className="mt-4 space-y-2 rounded-2xl border-2 border-dashed border-purple/40 bg-lavender-soft/50 p-4">
+            <div className="mt-4 space-y-3 rounded-2xl border-2 border-dashed border-purple/40 bg-lavender-soft/50 p-4">
               <p className="text-xs font-bold text-purple-deep">New {fresh.kind} token — shown once</p>
-              <CopyField value={fresh.token} />
-              {fresh.kind === "mcp" && <CopyField value={`claude mcp add --transport http research-map ${mcpUrl} --header "Authorization: Bearer ${fresh.token}"`} label="Copy command" />}
+              <CopyField value={fresh.token} label="Bearer Token" />
+              {fresh.kind === "mcp" && (
+                <div className="space-y-2 pt-2">
+                  <p className="text-xs font-semibold text-muted">Gemini CLI command:</p>
+                  <CopyField value={`gemini mcp add -t http -H "Authorization: Bearer ${fresh.token}" --trust research-map ${mcpUrl}`} label="Gemini command" />
+                  <p className="text-xs font-semibold text-muted pt-1">Claude Code command:</p>
+                  <CopyField value={`claude mcp add --transport http research-map ${mcpUrl} --header "Authorization: Bearer ${fresh.token}"`} label="Claude command" />
+                </div>
+              )}
             </div>
           )}
           <ul className="mt-4 divide-y divide-line">

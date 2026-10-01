@@ -294,13 +294,26 @@ func (a *App) ingestPage(ctx context.Context, u *User, b capturePageReq, session
 		}
 	}
 	// Visits flushed before the page existed are linked now.
-	if _, err := tx.Exec(ctx, `UPDATE visits SET page_id=$1 WHERE workspace_id=$2 AND url_normalized=$3 AND page_id IS NULL`, pageID, b.WorkspaceID, norm); err != nil {
+	var linkedFrom *time.Time
+	if err := tx.QueryRow(ctx, `WITH l AS (UPDATE visits SET page_id=$1 WHERE workspace_id=$2 AND url_normalized=$3 AND page_id IS NULL RETURNING started_at)
+		SELECT min(started_at) FROM l`, pageID, b.WorkspaceID, norm).Scan(&linkedFrom); err != nil {
 		return nil, err
+	}
+	refreshJourney := func() {
+		if linkedFrom == nil {
+			return
+		}
+		go func() {
+			bg, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			a.publishJourney(bg, b.WorkspaceID, u.ID, map[string]time.Time{pageID: *linkedFrom})
+		}()
 	}
 	if existing != "" {
 		if err := tx.Commit(ctx); err != nil {
 			return nil, err
 		}
+		refreshJourney()
 		return gin.H{"node_id": existing, "page_id": pageID, "is_new": false}, nil
 	}
 
@@ -353,6 +366,7 @@ func (a *App) ingestPage(ctx context.Context, u *User, b capturePageReq, session
 	}
 	a.publishNode(ctx, "node.created", nodeID, &u.ID)
 	a.pipeline.enqueue(nodeID)
+	refreshJourney()
 	// ctx may be the request's gin.Context (pooled after the handler returns), so use a fresh context here.
 	go func() {
 		bg, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -470,7 +484,7 @@ func (a *App) captureVisits(c *gin.Context) error {
 		return httpx.Validation("Too many visits in one batch")
 	}
 	accepted := 0
-	touched := map[string]bool{}
+	touched := map[string]time.Time{} // page → earliest new visit
 	for _, v := range b.Visits {
 		if !isHTTPURL(v.URL) || v.EndedAt.Sub(v.StartedAt) < 2*time.Second || v.EndedAt.Sub(v.StartedAt) > 12*time.Hour {
 			continue // tab-switch noise or invalid
@@ -485,15 +499,13 @@ func (a *App) captureVisits(c *gin.Context) error {
 		}
 		accepted++
 		if pageID != nil {
-			touched[*pageID] = true
+			if t, ok := touched[*pageID]; !ok || v.StartedAt.Before(t) {
+				touched[*pageID] = v.StartedAt
+			}
 		}
 	}
-	for pid := range touched {
-		var nid string
-		if a.db.QueryRow(c, `SELECT id FROM nodes WHERE page_id=$1 AND deleted_at IS NULL LIMIT 1`, pid).Scan(&nid) == nil {
-			a.publishNode(c, "node.updated", nid, nil)
-		}
-	}
+	// Visits change time spent and the research journey (previous/next topic) of these nodes and their neighbours.
+	a.publishJourney(c, s.WorkspaceID, u.ID, touched)
 	if s2, err := a.loadSession(c, s.ID); err == nil {
 		a.publish(s.WorkspaceID, "session.updated", nil, s2)
 	}

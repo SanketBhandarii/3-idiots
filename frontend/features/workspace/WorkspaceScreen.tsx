@@ -41,7 +41,7 @@ import {
   X,
   Brain,
 } from "@phosphor-icons/react";
-import type { BranchView, ColorBy, PanelKind, ViewMode } from "@/types/api";
+import type { BranchView, ColorBy, PanelKind, Session, ViewMode } from "@/types/api";
 import { sessionApi, workspaceApi } from "@/lib/api";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils/cn";
@@ -68,7 +68,7 @@ import { ActivityPanel, ConflictPanel, EdgePanel, InboxPanel, MemoryPanel, Radar
 import { GridView, ListView, TimelineView } from "@/features/views/Views";
 import { CommandPalette } from "@/features/search/CommandPalette";
 import { AddPageDialog, CompareDialog, ExportDialog, ShareDialog, ShortcutsDialog, StopSessionDialog } from "./Dialogs";
-import { useWorkspace } from "./useWorkspace";
+import { syncCachedSession, useWorkspace } from "./useWorkspace";
 import { qk } from "@/features/workspaces/hooks";
 
 
@@ -77,7 +77,11 @@ import { qk } from "@/features/workspaces/hooks";
 function useSessionControls(workspaceId: string) {
   const qc = useQueryClient();
   const session = useSessionStore((s) => s.session);
-  const setSession = useSessionStore((s) => s.setSession);
+  const setSessionStore = useSessionStore((s) => s.setSession);
+  const setSession = (s: Session | null) => {
+    setSessionStore(s);
+    syncCachedSession(qc, workspaceId, s);
+  };
   const [busy, setBusy] = useState(false);
   const wrap = async <T,>(fn: () => Promise<T>) => {
     setBusy(true);

@@ -7,6 +7,7 @@ import { getNodesBounds, getViewportForBounds, useReactFlow } from "@xyflow/reac
 import { Check, Copy as CopyIcon, DownloadSimple, FileText, GitMerge, Link as LinkIcon, Trash } from "@phosphor-icons/react";
 import type { ExportFormat, Role } from "@/types/api";
 import { branchApi, captureApi, exportApi, sharingApi } from "@/lib/api";
+import { ApiError } from "@/lib/api/errors";
 import { downloadDataUrl, downloadText, slugify } from "@/lib/utils/download";
 import { isHttpUrl } from "@/lib/utils/url";
 import { formatDate } from "@/lib/utils/format";
@@ -125,6 +126,8 @@ const FORMATS: { id: ExportFormat | "png" | "svg"; label: string; hint: string }
   { id: "bibtex", label: "BibTeX", hint: "References for papers" },
 ];
 
+const BLANK_PIXEL = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+
 export function ExportDialog({ workspaceId }: { workspaceId: string }) {
   const open = useUiStore((s) => s.dialog === "export");
   const title = useGraphStore((s) => s.workspace?.title ?? "workspace");
@@ -144,8 +147,14 @@ export function ExportDialog({ workspaceId }: { workspaceId: string }) {
         const w = Math.min(4000, Math.max(1200, bounds.width + 200));
         const h = Math.min(4000, Math.max(800, bounds.height + 200));
         const vp = getViewportForBounds(bounds, w, h, 0.05, 2, 0.05);
-        const opts = { backgroundColor: "#f5f1e8", width: w, height: h, style: { width: `${w}px`, height: `${h}px`, transform: `translate(${vp.x}px, ${vp.y}px) scale(${vp.zoom})` } };
-        const url = id === "png" ? await toPng(el, opts) : await toSvg(el, opts);
+        // Favicons/previews from other sites often can't be fetched (CORS/404); without a placeholder html-to-image
+        // rejects the whole capture with the image's error Event. A transparent pixel keeps the rest of the canvas.
+        const opts = { backgroundColor: "#f5f1e8", width: w, height: h, imagePlaceholder: BLANK_PIXEL, pixelRatio: 1, // dpr 2 × 4000px exceeds the canvas limit and never resolves
+          style: { width: `${w}px`, height: `${h}px`, transform: `translate(${vp.x}px, ${vp.y}px) scale(${vp.zoom})` } };
+        const url = await Promise.race([
+          id === "png" ? toPng(el, opts) : toSvg(el, opts),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("Image export timed out. Try zooming into a smaller area.")), 60000)),
+        ]);
         downloadDataUrl(`${slugify(title)}.${id}`, url);
       } else {
         const r = await exportApi.export(workspaceId, id);
@@ -154,8 +163,9 @@ export function ExportDialog({ workspaceId }: { workspaceId: string }) {
       setDone((d) => [...d, id]);
       toast.success("Export completed", { description: FORMATS.find((f) => f.id === id)!.label });
     } catch (e) {
-      if (e instanceof Error && !("code" in e)) toast.error("Export failed", { description: e.message });
-      else toast.apiError(e);
+      // Only API errors go to apiError; image-capture failures (DOMException, a DOM Event) get a specific message.
+      if (e instanceof ApiError) toast.apiError(e);
+      else toast.error("Export failed", { description: e instanceof Error ? e.message : "The canvas could not be captured as an image." });
     } finally {
       setBusy(null);
     }

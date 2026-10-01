@@ -36,7 +36,8 @@ P = {
  "place": 'A new page was added to a research graph. For each candidate that is REALLY related, return an edge. Relations: answers (question->page), '
    'subtopic_of, explains, supports, contradicts, example_of, prerequisite_of, alternative_to, same_topic, source_of, duplicate_of. '
    'Return JSON {"edges":[{"candidate_id":id,"relation":r,"direction":"candidate_to_new"|"new_to_candidate","reason":one clear sentence why,'
-   '"evidence":[short facts],"confidence":0-1}],"topic_name":best existing topic name if one fits, else a new 1-3 word topic}. Max 3 edges. Skip weak links.',
+   '"evidence":[short facts],"confidence":0-1}],"topic_name":best existing topic name if one fits, else a new 1-3 word topic}. Max 3 edges. Skip weak links. '
+   'is_opener / is_previous only say the user opened it from / just before this page: judge the relation on content, never on order alone.',
  "conflicts": 'For each pair of claims decide: agree|contradict|partially_contradict|different_context|unrelated. Never say which is correct. '
    'Return JSON {"results":[{"index":i,"label":l,"topic":short question they disagree on,"key_differences":[..],"possible_reasons":[..],'
    '"context":one sentence,"how_to_evaluate":[..],"confidence":0-1}]}',
@@ -233,7 +234,7 @@ class Placement(BaseModel):
 
 @app.post("/v1/place", dependencies=[Depends(auth)])
 def place(inp: dict):
-    cands = [{k: c.get(k) for k in ("id", "type", "title", "summary", "topics", "is_opener")} for c in (inp.get("candidates") or [])[:8]]
+    cands = [{k: c.get(k) for k in ("id", "type", "title", "summary", "topics", "is_opener", "is_previous")} for c in (inp.get("candidates") or [])[:8]]
     try:
         out = llm("place", json.dumps({"new_page": inp.get("page"), "candidates": cands, "existing_topics": (inp.get("existing_topics") or [])[:30]}), Placement)
     except HTTPException as e:

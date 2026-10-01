@@ -6,7 +6,12 @@ design.md
 allaboutourproject.md
 allaboutourproject.html
 allaboutourproject.*
+allaboutourproject*
+* (1).*
 build_site.py
+
+# Legacy web build cache (frontend is the active app)
+web/
 
 # Secrets — never commit real env files (only *.env.example)
 .env

@@ -186,3 +186,48 @@ open the app → Settings → Connect extension → open a workspace → Start T
 **Not yet verified in a real Chrome with the extension loaded** (built, not clicked through): capture while browsing, snapshots,
 live video (Alt+Shift+L), interactive embed, tab actions. **Known limits:** Readability.js not bundled (simple text extractor);
 reorganize uses AI topics, not /v1/cluster; no automated test suite beyond Go unit tests; secrets were shared in chat — rotate them.
+
+---
+
+## 2026-10-01 — Gemini + Groq key pools, extension hardening
+
+**AI provider architecture** (`agent/app/providers.py`): `GEMINI_API_KEY_1..4` and `GROQ_API_KEY_1..4` pools. Keys are tried in order;
+429/quota → key cooled down (Retry-After) → next key; 401/403 → key disabled 10 min → next key; timeouts/5xx → next key.
+One attempt per key, invalid JSON retried once, then the other provider. Everything rate-limited → Python returns 429 + Retry-After
+(Go waits and retries Agent 1 up to 3×); anything else → 502 and Go uses its labelled fallback (page is always kept).
+Routing: Agent 1, Agent 2, conflicts, report → Gemini first, Groq fallback. Radar, methodology → Groq first, Gemini fallback.
+Embeddings + clustering stay local (fastembed, scikit-learn). `/health` shows key counts, cooling slots and routing — never key values.
+Legacy single `GROQ_API_KEY` still accepted. The `groq` SDK was replaced by plain HTTPS calls (httpx).
+
+**Pipeline trace logs** (no secrets / no page content): `[EXTENSION] page captured` · `[GO] capture received` · `[GO] node created`
+(workspace_id, session_id, node_id, page_id) · `[AI] Agent 1 started/completed` · `[GO] embedding generated` · `[GO] candidates retrieved` ·
+`[AI] Agent 2 started/completed` · `[GO] edges persisted` · `[WS] graph update emitted`.
+
+**Extension** (`extension/background.js`): Mozilla Readability vendored (`extension/vendor/Readability.js`, Apache-2.0) with DOM fallback;
+pages with a visible password field are never auto-captured; incognito tabs rejected in code (plus `incognito: not_allowed`);
+dwell deadline persisted in `chrome.storage.session` and re-checked on the 30 s alarm (survives worker restarts) and only fires if the
+same URL is still active, window focused and `idle` = active; offline outbox for `/capture/page` + `/capture/search` (retried every 30 s,
+up to 20 tries, also flushed on STOP_TRACKING); `GET_OPEN_TABS` message added (frontend uses it on Stop).
+
+**Verification:** Python 3.12 env via `uv sync`; `uv run pytest` → 14 passed (key rotation, 429 cooldown, Gemini→Groq fallback, light-task
+routing, quote grounding, Agent 2 candidate filtering, 429 propagation). `go build/vet` OK, `tsc` OK.
+**Not verified:** live E2E against Neon/Gemini/Groq and in Chrome — no `backend/.env` / `agent/.env` with real credentials exists on this machine.
+
+## 2026-10-01 — Live environment + real pipeline run
+Real `.env` files written (git-ignored). Neon (direct host) connected, migrations at v2, `vector`/`pg_trgm`/`pgcrypto` present, `/readyz` ok.
+Gemini model switched to `gemini-flash-latest` (`gemini-2.5-flash` returns 404 for these keys). All 4 Gemini + 4 Groq keys answered.
+Real run through the extension's exact API calls: search → Question node; 2 real Wikipedia articles → nodes created instantly → Agent 1 (Gemini) →
+384-d embedding → pgvector candidates → Agent 2 (Gemini) → `answers` + `subtopic_of` edges with reasons → topic group → `ready`;
+duplicate retries returned the same node; visits → stats; capture after Stop → 409; WebSocket delivered node/page/edge/job/radar events.
+Not yet done by hand: loading the unpacked extension in Chrome and clicking through the UI.
+
+## 2026-10-01 — Pipeline audit fixes (Agent 1 → 2 → 3)
+- **Agent 1 → Agent 2 bug fixed:** a search Question node (the opener) was silently left out of Agent 2's candidates: its page join is NULL, so the `linked` flag could not be scanned into a Go bool. Fixed with `coalesce`. Result in a live run: `answers` edge (0.89) from the question to the page.
+- **Agent 3 is now a real stage** (`Pipeline.memory`): links visits that arrived before the page was captured, ties the page to its session, writes a `page_analyzed` event (`session_id`, analysis, topic group, edges, visits, time spent) and broadcasts `session.updated`. Before this fix, the "Agent 3" job messages were sent but nothing was saved.
+- **Retries:** when Agent 1 fails, the node is retried after 30 s, 2 min and 10 min (it is still resumed on restart).
+- **In-flight dedupe:** a node is never queued twice at the same time.
+- **Extension:** `START_TRACKING` now opens and focuses a new normal tab (`chrome://newtab`). That page is not http(s), so it is never captured.
+- **Verified live** (Neon + Gemini, using the same API calls the extension makes): stages from captured to ready over the WebSocket; 3 parallel captures produced 1 node; candidates came from pgvector, the opener, links and the question; AI edges were stored with reasons and confidence; the page went into a topic group; references and stats were saved; Agent 3 was saved; when Agent 3 failed, the page was still kept and the failure was reported.
+- **Still not clicked through in a real Chrome** with the unpacked extension.
+- **Conflict duplicates fixed:** both pages run the conflict check, so each pair came back once in each order and was saved twice. Now one conflict per pair, and no second `contradicts` edge when Agent 2 already drew one.
+- **Topic placement:** a new node joins the topic of its strongest connected node (confidence ≥ 0.7) before the AI topic name is used (spec §14.5). Before this, two related pages could land in two groups with slightly different names. Verified live: 2 opposite coffee studies → 1 conflict, 1 `contradicts` edge, 1 topic group.

@@ -209,7 +209,8 @@ function visibleBranchIds(workspaceId: string, userId: string, view: string): Se
   if (view === "all") return new Set(bs.map((b) => b.id));
   if (view === "main") return new Set([main.id]);
   if (view === "mine") return new Set(mine ? [mine.id] : [main.id]);
-  if (view === "main,mine") return new Set([main.id, ...(mine ? [mine.id] : [])]);
+  const agent = bs.find((b) => b.kind === "agent");
+  if (view === "main,mine") return new Set([main.id, ...(mine ? [mine.id] : []), ...(agent ? [agent.id] : [])]);
   return new Set([main.id, view]);
 }
 

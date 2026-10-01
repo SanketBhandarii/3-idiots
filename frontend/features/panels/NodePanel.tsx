@@ -235,7 +235,7 @@ export function NodePanel({ nodeId, readOnly }: { nodeId: string; readOnly: bool
           <Pill tone="lavender">{NODE_TYPE_LABEL[node.type]}</Pill>
           {page?.page_type && <Pill tone="sky">{PAGE_TYPE_LABEL[page.page_type]}</Pill>}
           {node.position_locked && <Pill tone="ink"><Lock size={10} weight="bold" /> Placed by you</Pill>}
-          {node.created_via === "mcp" && <Pill tone="purple"><Sparkle size={10} weight="fill" /> Added by AI (MCP)</Pill>}
+          {node.created_via === "mcp" && <Pill tone="purple"><Sparkle size={10} weight="fill" /> Added by {node.created_by_name ?? "AI assistant (MCP)"}</Pill>}
         </div>
         {editingTitle ? (
           <input autoFocus className="mt-2 w-full rounded-xl border-2 border-purple bg-white px-3 py-2 font-display text-lg font-bold outline-none" value={title} onChange={(e) => setTitle(e.target.value)} aria-label="Title"

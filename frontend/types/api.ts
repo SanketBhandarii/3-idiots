@@ -471,7 +471,7 @@ export type Relation =
   | "links_to"
   | "duplicate_of";
 
-export type EdgeOrigin = "ai" | "user" | "navigation" | "link" | "embedding";
+export type EdgeOrigin = "ai" | "user" | "navigation" | "link" | "embedding" | "mcp";
 export type EdgeState = "suggested" | "accepted" | "rejected";
 
 export interface ResearchEdge {

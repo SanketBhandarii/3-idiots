@@ -67,6 +67,7 @@ export function EdgePanel({ edgeId, readOnly }: { edgeId: string; readOnly: bool
         <div className="flex items-center justify-between">
           <h4 className="text-[11px] font-bold uppercase tracking-[0.14em] text-muted">Reason</h4>
           {edge.origin === "ai" && <Pill tone="lavender"><Sparkle size={10} weight="fill" /> AI-generated</Pill>}
+          {edge.origin === "mcp" && <Pill tone="purple"><Robot size={10} weight="fill" /> {edge.created_by_name ?? "AI assistant (MCP)"}</Pill>}
         </div>
         {reason !== null ? (
           <>

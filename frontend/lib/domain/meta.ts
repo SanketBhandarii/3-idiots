@@ -107,6 +107,7 @@ export const ORIGIN_LABEL = {
   navigation: "Navigation trail",
   link: "Hyperlink",
   embedding: "Similar content (embedding only)",
+  mcp: "Suggested by an AI assistant (MCP)",
 } as const;
 
 /* ---------------------------------------------------------------- page types */

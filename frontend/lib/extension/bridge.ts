@@ -20,7 +20,8 @@ type ExtMessage =
   | { type: "START_TRACKING"; workspace_id: string; session_id: string }
   | { type: "PAUSE_TRACKING" }
   | { type: "RESUME_TRACKING" }
-  | { type: "STOP_TRACKING" };
+  | { type: "STOP_TRACKING" }
+  | { type: "GET_OPEN_TABS" };
 
 interface Port {
   onMessage: { addListener: (fn: (m: Record<string, unknown>) => void) => void };
@@ -132,5 +133,10 @@ export const extensionBridge = {
   pauseTracking: () => void call({ type: "PAUSE_TRACKING" }),
   resumeTracking: () => void call({ type: "RESUME_TRACKING" }),
   stopTracking: () => void call({ type: "STOP_TRACKING" }),
+  /** Open http(s) tabs as reported by the extension (normalized URLs); null when the extension is not reachable. */
+  getOpenTabs: async (): Promise<string[] | null> => {
+    const res = await call<{ ok: boolean; tabs: { url_normalized: string }[] }>({ type: "GET_OPEN_TABS" });
+    return res?.ok ? res.tabs.map((t) => t.url_normalized) : null;
+  },
   openUrl: (url: string) => window.open(url, "_blank", "noopener,noreferrer"),
 };

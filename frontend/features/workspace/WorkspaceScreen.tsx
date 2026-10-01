@@ -121,7 +121,7 @@ function useSessionControls(workspaceId: string) {
     stop: async () =>
       (await wrap(async () => {
         if (!session) return null;
-        const tabs = API_MODE === "mock" ? browsingSimulator.openTabs() : Object.keys(useExtensionStore.getState().tabs);
+        const tabs = API_MODE === "mock" ? browsingSimulator.openTabs() : ((await extensionBridge.getOpenTabs()) ?? Object.keys(useExtensionStore.getState().tabs));
         browsingSimulator.stop();
         if (API_MODE !== "mock") extensionBridge.stopTracking();
         const s = await sessionApi.stop(session.id, tabs);
@@ -230,7 +230,7 @@ function BranchSwitcher() {
   const me = useAuthStore((s) => s.user);
   const mine = branches.find((b) => b.kind === "personal" && b.owner_id === me?.id);
   const opts: { v: BranchView; label: string }[] = [
-    { v: "main,mine", label: "Main + my branch" },
+    { v: "main,mine", label: "Main + my branch + AI Agent" },
     { v: "main", label: "Main" },
     ...(mine ? [{ v: "mine" as BranchView, label: "My branch" }] : []),
     { v: "all", label: "All branches" },

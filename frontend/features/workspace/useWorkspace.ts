@@ -48,7 +48,7 @@ export function useWorkspace(workspaceId: string) {
       const active = graph.data.workspace.active_session;
       useSessionStore.getState().setSession(active);
       if (API_MODE === "mock" && active?.state === "active" && !browsingSimulator.isRunning(workspaceId)) browsingSimulator.start(workspaceId, active.id);
-      if (API_MODE === "http") void connectExtension().then((ok) => ok && active && active.state !== "stopped" && extensionBridge.startTracking(workspaceId, active.id));
+      if (API_MODE === "http") void connectExtension().then((ok) => ok && active && active.state !== "stopped" && extensionBridge.startTracking(workspaceId, active.id, false));
       const jumpTo = new URLSearchParams(window.location.search).get("node");
       if (jumpTo) {
         useUiStore.getState().setViewMode("graph");
@@ -111,7 +111,12 @@ export function useWorkspace(workspaceId: string) {
     };
     socket = connectWorkspaceSocket(workspaceId, {
       onMessage,
-      onStatus: (s) => useCollabStore.getState().setSocketStatus(s),
+      onStatus: (s) => {
+        const prev = useCollabStore.getState().socketStatus;
+        useCollabStore.getState().setSocketStatus(s);
+        // The hub drops frames for disconnected/slow clients; refetch so nodes captured during the gap appear.
+        if (s === "open" && prev === "reconnecting") void qc.invalidateQueries({ queryKey: ["graph", workspaceId] });
+      },
     });
     return () => {
       socket?.close();

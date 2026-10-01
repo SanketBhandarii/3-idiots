@@ -18,9 +18,11 @@ import (
 
 func main() {
 	time.Local = time.UTC // every timestamp in JSON is UTC
-	if err := config.LoadDotEnv(".env"); err != nil {
-		slog.Error("read .env", "err", err)
-		os.Exit(1)
+	for _, envPath := range []string{".env", "backend/.env", "../backend/.env"} {
+		if err := config.LoadDotEnv(envPath); err != nil {
+			slog.Error("read "+envPath, "err", err)
+			os.Exit(1)
+		}
 	}
 	cfg, err := config.Load()
 	if err != nil {

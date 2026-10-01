@@ -11,7 +11,14 @@ from dotenv import load_dotenv
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field, ValidationError
 
-load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+_agent_root = Path(__file__).resolve().parent.parent
+for _env_path in [
+    _agent_root.parent / "backend" / ".env",
+    _agent_root / ".env",
+    _agent_root.parent / ".env",
+]:
+    if _env_path.is_file():
+        load_dotenv(_env_path)
 from app.providers import AllProvidersFailed, build_router  # noqa: E402  (after .env is loaded)
 
 logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO").upper(), format="%(asctime)s %(levelname)s %(message)s")

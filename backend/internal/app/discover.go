@@ -407,12 +407,7 @@ func (a *App) search(c *gin.Context) error {
 	}
 	start := time.Now()
 	q := strings.TrimSpace(c.Query("q"))
-	var f struct {
-		Kinds     []string `json:"kinds"`
-		TagIDs    []string `json:"tag_ids"`
-		Domains   []string `json:"domains"`
-		PageTypes []string `json:"page_types"`
-	}
+	var f searchFilters
 	if raw := c.Query("filters"); raw != "" {
 		if err := json.Unmarshal([]byte(raw), &f); err != nil {
 			return httpx.BadRequest("filters must be JSON")
@@ -422,6 +417,21 @@ func (a *App) search(c *gin.Context) error {
 		c.JSON(200, gin.H{"query": q, "results": []gin.H{}, "took_ms": 0})
 		return nil
 	}
+	out := a.hybridSearch(c, wsID, q, f)
+	c.JSON(200, gin.H{"query": q, "results": out, "took_ms": time.Since(start).Milliseconds()})
+	return nil
+}
+
+type searchFilters struct {
+	Kinds     []string `json:"kinds"`
+	TagIDs    []string `json:"tag_ids"`
+	Domains   []string `json:"domains"`
+	PageTypes []string `json:"page_types"`
+}
+
+// hybridSearch ranks full-text, fuzzy, notes, tags and pgvector matches with reciprocal rank fusion.
+// Shared by the REST search endpoint and the MCP search_workspace tool so both rank the same way.
+func (a *App) hybridSearch(ctx context.Context, wsID, q string, f searchFilters) []gin.H {
 	want := func(k string) bool {
 		if len(f.Kinds) == 0 {
 			return true
@@ -450,7 +460,7 @@ func (a *App) search(c *gin.Context) error {
 		AND (cardinality($5::text[])=0 OR p.page_type = ANY($5::text[]))`
 	like := "%" + strings.ReplaceAll(strings.ReplaceAll(q, "%", ""), "_", "") + "%"
 	scan := func(sql string, args ...any) []gin.H {
-		rows, err := a.db.Query(c, sql, args...)
+		rows, err := a.db.Query(ctx, sql, args...)
 		if err != nil {
 			return nil
 		}
@@ -491,7 +501,7 @@ func (a *App) search(c *gin.Context) error {
 	var emb struct {
 		Vectors [][]float32 `json:"vectors"`
 	}
-	if a.agent.post(c, "/v1/embed", gin.H{"texts": []string{q}}, &emb) == nil && len(emb.Vectors) == 1 {
+	if a.agent.post(ctx, "/v1/embed", gin.H{"texts": []string{q}}, &emb) == nil && len(emb.Vectors) == 1 {
 		addRanked(scan(`SELECT 'page:'||n.id, 'page', n.id, n.title, left(coalesce(p.summary,''),160), p.url, n.tag_ids
 			FROM nodes n JOIN pages p ON p.id=n.page_id WHERE `+nodeFilter+` AND p.embedding IS NOT NULL AND 1-(p.embedding <=> $6::vector) > 0.45
 			ORDER BY p.embedding <=> $6::vector LIMIT 15`, append(base, *vec(emb.Vectors[0]))...))
@@ -505,8 +515,7 @@ func (a *App) search(c *gin.Context) error {
 	if len(out) > 40 {
 		out = out[:40]
 	}
-	c.JSON(200, gin.H{"query": q, "results": out, "took_ms": time.Since(start).Milliseconds()})
-	return nil
+	return out
 }
 
 /* ---------------------------------------------------------------- export + import */

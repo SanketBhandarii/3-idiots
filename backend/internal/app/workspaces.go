@@ -232,10 +232,16 @@ func (a *App) visibleBranches(ctx context.Context, wsID, userID, view string) ([
 		}
 		return []string{main}, nil
 	case "", "main,mine":
+		// The default view also shows the AI Agent branch: what an MCP assistant adds must be visible for review
+		// without hunting for it (items there are marked "AI-suggested" and are copied to Main on approval).
+		ids := []string{main}
 		if mine != nil {
-			return []string{main, *mine}, nil
+			ids = append(ids, *mine)
 		}
-		return []string{main}, nil
+		if agent := a.agentBranch(ctx, wsID); agent != "" {
+			ids = append(ids, agent)
+		}
+		return ids, nil
 	}
 	var ok bool
 	_ = a.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM branches WHERE id=$1 AND workspace_id=$2)`, view, wsID).Scan(&ok)
@@ -589,7 +595,7 @@ func (a *App) compareBranches(c *gin.Context) error {
 			return nil, nil, httpx.NotFound("Branch")
 		}
 		rows, err := a.db.Query(c, `SELECT n.id,n.type,n.title,p.url,coalesce(p.url_normalized,''),
-			CASE WHEN n.created_via='mcp' THEN 'AI assistant (MCP)' ELSE coalesce(u.name,'Unknown') END
+			CASE WHEN n.created_via='mcp' THEN 'AI assistant ('||coalesce(n.client_name,'MCP')||')' ELSE coalesce(u.name,'Unknown') END
 			FROM nodes n LEFT JOIN pages p ON p.id=n.page_id LEFT JOIN users u ON u.id=n.created_by
 			WHERE n.branch_id=$1 AND n.deleted_at IS NULL AND n.type<>'topic'`, bid)
 		if err != nil {
@@ -693,10 +699,10 @@ func (a *App) mergeBranch(c *gin.Context) error {
 		}
 		var newID string
 		err := tx.QueryRow(c, `INSERT INTO nodes (workspace_id,branch_id,type,page_id,origin_node_id,title,body,x,y,width,height,category_id,
-			importance,status,why_opened,created_by,created_via,ai_stage,tag_ids)
+			importance,status,why_opened,created_by,created_via,ai_stage,tag_ids,client_name)
 			SELECT n.workspace_id,$2,n.type,n.page_id,n.id,n.title,n.body,
 			  n.x + coalesce(p.x,0), n.y + coalesce(p.y,0) + 20, n.width,n.height,n.category_id,n.importance,n.status,n.why_opened,n.created_by,
-			  n.created_via,n.ai_stage,n.tag_ids
+			  n.created_via,n.ai_stage,n.tag_ids,n.client_name
 			FROM nodes n LEFT JOIN nodes p ON p.id=n.parent_id WHERE n.id=$1 AND n.workspace_id=$3 AND n.deleted_at IS NULL AND n.type<>'topic'
 			RETURNING id`, nid, main, wsID).Scan(&newID)
 		if err != nil {
@@ -740,8 +746,8 @@ func (a *App) mergeBranch(c *gin.Context) error {
 			continue
 		}
 		var nid string
-		if err := tx.QueryRow(c, `INSERT INTO edges (workspace_id,branch_id,source_id,target_id,relation,label,reason,evidence,confidence,origin,state,locked,created_by,decided_by)
-			SELECT workspace_id,$2,$3,$4,relation,label,reason,evidence,confidence,origin,state,locked,created_by,decided_by FROM edges WHERE id=$1
+		if err := tx.QueryRow(c, `INSERT INTO edges (workspace_id,branch_id,source_id,target_id,relation,label,reason,evidence,confidence,origin,state,locked,created_by,decided_by,client_name)
+			SELECT workspace_id,$2,$3,$4,relation,label,reason,evidence,confidence,origin,state,locked,created_by,decided_by,client_name FROM edges WHERE id=$1
 			ON CONFLICT (source_id,target_id,relation) DO NOTHING RETURNING id`, e.id, main, s, t).Scan(&nid); err == nil {
 			edgeIDs = append(edgeIDs, nid)
 		}

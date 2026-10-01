@@ -54,7 +54,7 @@ type Node struct {
 
 const nodeSelect = `SELECT n.id,n.workspace_id,n.branch_id,n.type,n.page_id,n.parent_id,n.origin_node_id,n.title,n.body,n.x,n.y,
  n.width,n.height,n.collapsed,n.category_id,n.importance,n.status,n.position_locked,n.group_locked,n.name_locked,n.why_opened,
- n.created_by, CASE WHEN n.created_via='mcp' THEN 'AI assistant (MCP)' ELSE u.name END AS created_by_name,
+ n.created_by, CASE WHEN n.created_via='mcp' THEN 'AI assistant ('||coalesce(n.client_name,'MCP')||')' ELSE u.name END AS created_by_name,
  n.created_via,n.version,n.created_at,n.updated_at,n.tag_ids,n.ai_stage,n.duplicate_of
  FROM nodes n LEFT JOIN users u ON u.id=n.created_by `
 
@@ -82,7 +82,7 @@ type Edge struct {
 }
 
 const edgeSelect = `SELECT e.id,e.workspace_id,e.branch_id,e.source_id,e.target_id,e.relation,e.label,e.reason,e.evidence,e.confidence,
- e.origin,e.state,e.locked,e.created_by,cu.name AS created_by_name,e.decided_by,du.name AS decided_by_name,e.version,e.created_at,e.updated_at
+ e.origin,e.state,e.locked,e.created_by,CASE WHEN e.origin='mcp' THEN 'AI assistant ('||coalesce(e.client_name,'MCP')||')' ELSE cu.name END AS created_by_name,e.decided_by,du.name AS decided_by_name,e.version,e.created_at,e.updated_at
  FROM edges e LEFT JOIN users cu ON cu.id=e.created_by LEFT JOIN users du ON du.id=e.decided_by `
 
 type Claim struct {

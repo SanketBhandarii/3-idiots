@@ -138,11 +138,11 @@ func (a *App) userFromRequest(c *gin.Context) (*User, error) {
 		sum := sha256.Sum256([]byte(strings.TrimSpace(strings.TrimPrefix(h, "Bearer "))))
 		var u User
 		err := a.db.QueryRow(c, `UPDATE api_tokens t SET last_used_at=now() FROM users u
-			WHERE t.token_hash=$1 AND t.revoked_at IS NULL AND u.id=t.user_id
+			WHERE t.token_hash=$1 AND t.revoked_at IS NULL AND (t.expires_at IS NULL OR t.expires_at > now()) AND u.id=t.user_id
 			RETURNING u.id,u.email,u.name,u.avatar_color,u.created_at,t.kind`, hex.EncodeToString(sum[:])).
 			Scan(&u.ID, &u.Email, &u.Name, &u.AvatarColor, &u.CreatedAt, &u.TokenKind)
 		if err != nil {
-			return nil, httpx.Unauthorized("Invalid or revoked token")
+			return nil, httpx.Unauthorized("Invalid, expired or revoked token")
 		}
 		return &u, nil
 	}
@@ -212,9 +212,20 @@ func (a *App) listTokens(c *gin.Context) error {
 }
 
 func (a *App) createToken(c *gin.Context) error {
-	var b struct{ Kind, Name string }
+	var b struct {
+		Kind, Name    string
+		ExpiresInDays int `json:"expires_in_days"` // optional; 0 = never expires
+	}
 	if err := bind(c, &b); err != nil {
 		return err
+	}
+	if b.ExpiresInDays < 0 || b.ExpiresInDays > 3650 {
+		return httpx.Validation("expires_in_days must be between 1 and 3650")
+	}
+	var expires *time.Time
+	if b.ExpiresInDays > 0 {
+		t := time.Now().Add(time.Duration(b.ExpiresInDays) * 24 * time.Hour)
+		expires = &t
 	}
 	if b.Kind != "extension" && b.Kind != "mcp" {
 		return httpx.Validation("kind must be extension or mcp")
@@ -226,14 +237,14 @@ func (a *App) createToken(c *gin.Context) error {
 	_, _ = rand.Read(raw)
 	plain := "rm_" + b.Kind[:3] + "_" + hex.EncodeToString(raw)
 	sum := sha256.Sum256([]byte(plain))
-	rows, _ := a.db.Query(c, `INSERT INTO api_tokens (user_id,name,kind,token_hash) VALUES ($1,$2,$3,$4)
-		RETURNING id,name,kind,created_at,last_used_at,revoked_at`, currentUser(c).ID, b.Name, b.Kind, hex.EncodeToString(sum[:]))
+	rows, _ := a.db.Query(c, `INSERT INTO api_tokens (user_id,name,kind,token_hash,expires_at) VALUES ($1,$2,$3,$4,$5)
+		RETURNING id,name,kind,created_at,last_used_at,revoked_at`, currentUser(c).ID, b.Name, b.Kind, hex.EncodeToString(sum[:]), expires)
 	t, err := pgx.CollectExactlyOneRow(rows, pgx.RowToStructByName[ApiToken])
 	if err != nil {
 		return err
 	}
 	c.JSON(201, gin.H{"id": t.ID, "name": t.Name, "kind": t.Kind, "created_at": t.CreatedAt,
-		"last_used_at": nil, "revoked_at": nil, "token": plain})
+		"last_used_at": nil, "revoked_at": nil, "expires_at": expires, "token": plain})
 	return nil
 }
 

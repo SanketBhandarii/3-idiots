@@ -45,6 +45,9 @@ func (h *Hub) Broadcast(wsID string, m Message) {
 	}
 	h.mu.RLock()
 	defer h.mu.RUnlock()
+	if m.Type == "node.created" || m.Type == "edge.created" || m.Type == "page.analyzed" {
+		slog.Info("[WS] graph update emitted", "type", m.Type, "workspace_id", wsID, "clients", len(h.rooms[wsID]))
+	}
 	for c := range h.rooms[wsID] {
 		select {
 		case c.send <- b:
@@ -57,6 +60,9 @@ func (h *Hub) broadcastExcept(wsID string, skip *client, m Message) {
 	b, _ := json.Marshal(m)
 	h.mu.RLock()
 	defer h.mu.RUnlock()
+	if m.Type == "node.created" || m.Type == "edge.created" || m.Type == "page.analyzed" {
+		slog.Info("[WS] graph update emitted", "type", m.Type, "workspace_id", wsID, "clients", len(h.rooms[wsID]))
+	}
 	for c := range h.rooms[wsID] {
 		if c != skip {
 			select {

@@ -26,12 +26,13 @@ type AgentClient struct {
 	base, key string
 	http      *http.Client
 	mu        sync.Mutex
-	models    map[string]string
+	models    map[string]map[string]string
 }
 
 type agentError struct {
-	Status int
-	Msg    string
+	Status     int
+	Msg        string
+	RetryAfter time.Duration
 }
 
 func (e *agentError) Error() string { return fmt.Sprintf("agent %d: %s", e.Status, e.Msg) }
@@ -51,7 +52,8 @@ func (ac *AgentClient) post(ctx context.Context, path string, in, out any) error
 	defer res.Body.Close()
 	b, _ := io.ReadAll(io.LimitReader(res.Body, 4<<20))
 	if res.StatusCode != 200 {
-		return &agentError{res.StatusCode, strings.TrimSpace(string(b))}
+		ra, _ := strconv.Atoi(res.Header.Get("Retry-After"))
+		return &agentError{Status: res.StatusCode, Msg: strings.TrimSpace(string(b)), RetryAfter: time.Duration(ra) * time.Second}
 	}
 	return json.Unmarshal(b, out)
 }
@@ -64,7 +66,7 @@ func (ac *AgentClient) Health(ctx context.Context) error {
 	}
 	defer res.Body.Close()
 	var h struct {
-		Models map[string]string `json:"models"`
+		Models map[string]map[string]string `json:"models"`
 	}
 	_ = json.NewDecoder(res.Body).Decode(&h)
 	ac.mu.Lock()
@@ -78,16 +80,16 @@ func (ac *AgentClient) Health(ctx context.Context) error {
 
 func (ac *AgentClient) ReportModel(ctx context.Context) string {
 	ac.mu.Lock()
-	m := ac.models["report"]
+	m := ac.models["report"]["gemini"]
 	ac.mu.Unlock()
 	if m == "" {
 		_ = ac.Health(ctx)
 		ac.mu.Lock()
-		m = ac.models["report"]
+		m = ac.models["report"]["gemini"]
 		ac.mu.Unlock()
 	}
 	if m == "" {
-		return "groq"
+		return "gemini"
 	}
 	return m
 }
@@ -97,18 +99,54 @@ func (ac *AgentClient) ReportModel(ctx context.Context) string {
 // Pipeline runs page analysis in-process with a bounded worker pool. State is persisted on each node
 // (ai_stage), so unfinished work is picked up again after a restart.
 type Pipeline struct {
-	a     *App
-	queue chan string
+	a        *App
+	queue    chan string
+	mu       sync.Mutex
+	inflight map[string]bool // queued or running; stops duplicate tab events from analyzing one node twice
+	attempts map[string]int  // Agent 1 failures per node in this process (restart resets; ai_stage<>'ready' is resumed)
 }
 
-func newPipeline(a *App) *Pipeline { return &Pipeline{a: a, queue: make(chan string, 1000)} }
+// retryDelays: Agent 1 failures are retried in the background so a captured page is never stuck in "failed".
+var retryDelays = []time.Duration{30 * time.Second, 2 * time.Minute, 10 * time.Minute}
+
+func newPipeline(a *App) *Pipeline {
+	return &Pipeline{a: a, queue: make(chan string, 1000), inflight: map[string]bool{}, attempts: map[string]int{}}
+}
 
 func (p *Pipeline) enqueue(nodeID string) {
+	p.mu.Lock()
+	if p.inflight[nodeID] {
+		p.mu.Unlock()
+		return
+	}
+	p.inflight[nodeID] = true
+	p.mu.Unlock()
 	select {
 	case p.queue <- nodeID:
 	default:
+		p.done(nodeID)
 		slog.Warn("pipeline queue full; node will be retried on restart", "node_id", nodeID)
 	}
+}
+
+func (p *Pipeline) done(nodeID string) {
+	p.mu.Lock()
+	delete(p.inflight, nodeID)
+	p.mu.Unlock()
+}
+
+// scheduleRetry re-queues a node whose Agent 1 step failed, with backoff. Returns false when attempts are used up.
+func (p *Pipeline) scheduleRetry(nodeID string) (time.Duration, bool) {
+	p.mu.Lock()
+	n := p.attempts[nodeID]
+	p.attempts[nodeID] = n + 1
+	p.mu.Unlock()
+	if n >= len(retryDelays) {
+		return 0, false
+	}
+	d := retryDelays[n]
+	time.AfterFunc(d, func() { p.enqueue(nodeID) })
+	return d, true
 }
 
 func (p *Pipeline) start(ctx context.Context) {
@@ -131,6 +169,7 @@ func (p *Pipeline) start(ctx context.Context) {
 					return
 				case id := <-p.queue:
 					p.process(ctx, id)
+					p.done(id)
 				}
 			}
 		}()
@@ -149,6 +188,7 @@ type understandOut struct {
 	Embedding         []float32 `json:"embedding"`
 	Fallback          bool      `json:"fallback"`
 	FetchedText       string    `json:"fetched_text"`
+	FetchedTitle      string    `json:"fetched_title"`
 }
 
 type claimIn struct {
@@ -192,29 +232,52 @@ func (p *Pipeline) process(ctx context.Context, nodeID string) {
 		return
 	}
 	nid := &nodeID
-	p.job(wsID, "metadata", "done", "Agent 3 · Saved metadata for “"+title+"”", nid, 3)
 	p.stage(ctx, nodeID, "analyzing", "")
 	p.job(wsID, "analyze_page", "running", "Agent 1 · Analyzing page…", nid, 1)
 
 	// Agent 1 — understand the page (retried: Groq rate limits are common on the free tier).
 	var u understandOut
+	slog.Info("[AI] Agent 1 started", "workspace_id", wsID, "node_id", nodeID, "page_id", pageID, "content_chars", len(content))
 	for attempt := 0; attempt < 3; attempt++ {
 		err = a.agent.post(ctx, "/v1/understand", gin.H{"url": url, "title": title, "domain": domain, "content_text": content}, &u)
 		var ae *agentError
 		if err == nil || !(errors.As(err, &ae) && ae.Status == 429) {
 			break
 		}
-		time.Sleep(time.Duration(5*(attempt+1)) * time.Second)
+		wait := time.Duration(5*(attempt+1)) * time.Second
+		if ae.RetryAfter > wait && ae.RetryAfter < time.Minute {
+			wait = ae.RetryAfter
+		}
+		slog.Warn("[AI] Agent 1 rate limited on every key; retrying", "node_id", nodeID, "wait", wait.String())
+		select {
+		case <-ctx.Done():
+		case <-time.After(wait):
+		}
 	}
 	if err != nil {
-		slog.Warn("agent 1 failed", "node_id", nodeID, "err", err)
+		slog.Warn("[AI] Agent 1 failed", "node_id", nodeID, "err", err)
 		_, _ = a.db.Exec(ctx, `UPDATE pages SET analysis_status='failed' WHERE id=$1`, pageID)
 		p.stage(ctx, nodeID, "failed", ", status='active'")
-		p.job(wsID, "analyze_page", "failed", "AI unavailable · page saved, analysis will be retried later", nid, 1)
+		msg := "AI unavailable · page saved, analysis failed after all retries"
+		if d, ok := p.scheduleRetry(nodeID); ok {
+			msg = "AI unavailable · page saved, retrying in " + d.String()
+		}
+		p.job(wsID, "analyze_page", "failed", msg, nid, 1)
+		p.a.logEvent(ctx, wsID, nil, "analysis_failed", gin.H{"node_id": nodeID, "page_id": pageID})
 		return
+	}
+	slog.Info("[AI] Agent 1 completed", "node_id", nodeID, "is_research", u.IsResearch, "page_type", u.PageType, "topics", len(u.Topics), "claims", len(u.Claims), "fallback", u.Fallback)
+	if len(u.Embedding) > 0 {
+		slog.Info("[GO] embedding generated", "node_id", nodeID, "dims", len(u.Embedding))
 	}
 	if u.FetchedText != "" && content == "" {
 		_, _ = a.db.Exec(ctx, `UPDATE pages SET content_text=$2, word_count=$3 WHERE id=$1`, pageID, truncateRunes(u.FetchedText, 20000), len(strings.Fields(u.FetchedText)))
+	}
+	// Sources added by URL only (MCP add_source) start titled with the bare domain; use the real page title.
+	if t := strings.TrimSpace(u.FetchedTitle); t != "" && title == domain {
+		title = truncateRunes(t, 500)
+		_, _ = a.db.Exec(ctx, `UPDATE pages SET title=$2 WHERE id=$1`, pageID, title)
+		_, _ = a.db.Exec(ctx, `UPDATE nodes SET title=$2 WHERE id=$1 AND title=$3`, nodeID, title, domain)
 	}
 	topics, _ := json.Marshal(nonNil(u.Topics))
 	qa, _ := json.Marshal(nonNil(u.QuestionsAnswered))
@@ -242,6 +305,7 @@ func (p *Pipeline) process(ctx context.Context, nodeID string) {
 	p.job(wsID, "analyze_page", "done", msg, nid, 1)
 
 	if !u.IsResearch && !u.Fallback {
+		p.memory(ctx, wsID, nodeID, pageID, u, 0, "")
 		p.stage(ctx, nodeID, "ready", ", status='inbox'")
 		p.job(wsID, "analyze_page", "done", "Moved “"+title+"” to Inbox (not research)", nid, 1)
 		return
@@ -252,21 +316,76 @@ func (p *Pipeline) process(ctx context.Context, nodeID string) {
 	p.job(wsID, "place_page", "running", "Agent 2 · Finding relationships…", nid, 2)
 	created, topicName := p.connect(ctx, wsID, nodeID, pageID, u, whyRaw)
 	if topicName != "" {
-		p.placeInTopic(ctx, wsID, nodeID, topicName)
+		topicName = p.placeInTopic(ctx, wsID, nodeID, topicName)
 	}
 	p.stage(ctx, nodeID, "connected", "")
 	place := ""
 	if topicName != "" {
 		place = " · placed in “" + topicName + "”"
 	}
+	slog.Info("[GO] edges persisted", "node_id", nodeID, "count", created, "topic", topicName)
 	p.job(wsID, "place_page", "done", fmt.Sprintf("Agent 2 · %d connection(s) found%s", created, place), nid, 2)
+
+	// Agent 3 — deterministic metadata + research memory (no AI).
+	p.job(wsID, "metadata", "running", "Agent 3 · Saving research memory…", nid, 3)
+	if err := p.memory(ctx, wsID, nodeID, pageID, u, created, topicName); err != nil {
+		slog.Warn("[GO] Agent 3 failed", "node_id", nodeID, "err", err)
+		p.job(wsID, "metadata", "failed", "Agent 3 · Research memory not saved (page and analysis are kept)", nid, 3)
+	} else {
+		p.job(wsID, "metadata", "done", "Agent 3 · Research Memory updated", nid, 3)
+	}
+	p.mu.Lock()
+	delete(p.attempts, nodeID)
+	p.mu.Unlock()
 	p.stage(ctx, nodeID, "ready", ", status='active'")
-	p.job(wsID, "metadata", "done", "Agent 3 · Research Memory updated", nid, 3)
 
 	p.checkConflicts(ctx, wsID, nodeID, pageID)
 	if r, err := a.computeRadar(ctx, wsID); err == nil {
 		a.publish(wsID, "radar.updated", nil, r)
 	}
+}
+
+// memory is Agent 3 (spec §14.4): plain Go, no AI. It ties the analysed page to its session (reference number,
+// visits/time), records a research-memory event with the Agent 1 + Agent 2 results, and refreshes the node so the
+// Research Memory panel (first opened, time spent, previous/next topic) reflects the final placement.
+func (p *Pipeline) memory(ctx context.Context, wsID, nodeID, pageID string, u understandOut, edges int, topic string) error {
+	a := p.a
+	tx, err := a.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var sessionID, userID *string
+	_ = tx.QueryRow(ctx, `SELECT r.session_id, r.added_by FROM session_references r WHERE r.page_id=$1 ORDER BY r.first_accessed_at DESC LIMIT 1`, pageID).
+		Scan(&sessionID, &userID)
+	// Visits that arrived before (or racing with) the capture are linked to this page.
+	if _, err := tx.Exec(ctx, `UPDATE visits SET page_id=$1 WHERE workspace_id=$2 AND page_id IS NULL
+		AND url_normalized=(SELECT url_normalized FROM pages WHERE id=$1)`, pageID, wsID); err != nil {
+		return err
+	}
+	var visits int
+	var spentMs int64
+	if err := tx.QueryRow(ctx, `SELECT count(*), coalesce(sum((extract(epoch FROM ended_at-started_at)*1000)::bigint),0)::bigint
+		FROM visits WHERE page_id=$1`, pageID).Scan(&visits, &spentMs); err != nil {
+		return err
+	}
+	payload := mustJSON(gin.H{"session_id": sessionID, "node_id": nodeID, "page_id": pageID, "main_concept": u.MainConcept, "page_type": u.PageType,
+		"is_research": u.IsResearch, "topics": nonNil(u.Topics), "topic_group": topic, "edges_created": edges,
+		"ai_fallback": u.Fallback, "visits": visits, "time_spent_ms": spentMs})
+	if _, err := tx.Exec(ctx, `INSERT INTO events (workspace_id,user_id,kind,payload) VALUES ($1,$2,'page_analyzed',$3)`,
+		wsID, userID, payload); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return err
+	}
+	slog.Info("[GO] Agent 3 research memory saved", "node_id", nodeID, "session_id", sessionID, "visits", visits, "time_spent_ms", spentMs)
+	if sessionID != nil {
+		if s, err := a.loadSession(ctx, *sessionID); err == nil {
+			a.publish(wsID, "session.updated", nil, s)
+		}
+	}
+	return nil
 }
 
 func nonNil(s []string) []string {
@@ -332,7 +451,7 @@ func (p *Pipeline) connect(ctx context.Context, wsID, nodeID, pageID string, u u
 		norm = append(norm, normalizeURL(l))
 	}
 	extra, _ := a.db.Query(ctx, `SELECT n.id, n.type, n.title, coalesce(p.summary,''), coalesce(p.topics,'[]'::jsonb),
-		(n.id = $3) AS opener, (p.url_normalized = ANY($4)) AS linked
+		coalesce(n.id = $3, false) AS opener, coalesce(p.url_normalized = ANY($4), false) AS linked
 		FROM nodes n LEFT JOIN pages p ON p.id=n.page_id WHERE n.workspace_id=$1 AND n.deleted_at IS NULL AND n.id<>$2
 		AND (n.id=$3 OR p.url_normalized = ANY($4) OR (n.type='question' AND n.title ILIKE ANY(SELECT '%'||x||'%' FROM jsonb_array_elements_text($5::jsonb) x)))
 		LIMIT 6`, wsID, nodeID, why.OpenerNodeID, norm, mustJSON(u.Topics))
@@ -397,12 +516,16 @@ func (p *Pipeline) connect(ctx context.Context, wsID, nodeID, pageID string, u u
 	for _, c := range cands {
 		list = append(list, c)
 	}
+	slog.Info("[GO] candidates retrieved", "node_id", nodeID, "count", len(list))
+	slog.Info("[AI] Agent 2 started", "node_id", nodeID)
 	var out placeOut
 	err = a.agent.post(ctx, "/v1/place", gin.H{"page": gin.H{"title": u.MainConcept, "summary": u.Summary, "topics": u.Topics, "page_type": u.PageType},
 		"candidates": list, "existing_topics": topics}, &out)
 	if err != nil {
-		slog.Warn("agent 2 failed; using similarity only", "err", err)
+		slog.Warn("[AI] Agent 2 failed; using similarity only", "node_id", nodeID, "err", err)
 		out.Fallback = true
+	} else {
+		slog.Info("[AI] Agent 2 completed", "node_id", nodeID, "edges_proposed", len(out.Edges), "topic", out.TopicName, "fallback", out.Fallback)
 	}
 	if out.Fallback {
 		// Honest fallback: similarity-only edges, clearly labelled as not explained by AI.
@@ -479,17 +602,26 @@ func mustJSON(v any) []byte {
 var topicColors = []string{"#7b5cf0", "#f08a6c", "#2f6fbf", "#3f8a2e", "#c9544f", "#a86f00", "#0f9d8a"}
 
 // placeInTopic moves the node into the named topic group (creating it if needed), unless the user locked its group.
-func (p *Pipeline) placeInTopic(ctx context.Context, wsID, nodeID, topicName string) {
+func (p *Pipeline) placeInTopic(ctx context.Context, wsID, nodeID, topicName string) string {
 	a := p.a
 	topicName = truncateRunes(topicName, 60)
 	var locked bool
 	var parent *string
 	var branch string
 	if a.db.QueryRow(ctx, `SELECT group_locked, parent_id, branch_id FROM nodes WHERE id=$1`, nodeID).Scan(&locked, &parent, &branch) != nil || locked || parent != nil {
-		return
+		return "" // the user (or an earlier run) already decided the group
 	}
 	var topicID string
-	_ = a.db.QueryRow(ctx, `SELECT id FROM nodes WHERE workspace_id=$1 AND type='topic' AND deleted_at IS NULL AND lower(title)=lower($2) LIMIT 1`, wsID, topicName).Scan(&topicID)
+	// Spec §14.5: a new node goes next to its strongest connected node. If that node is already in a topic,
+	// join it instead of opening a second group under a differently worded AI name.
+	_ = a.db.QueryRow(ctx, `SELECT o.parent_id FROM edges e
+		JOIN nodes o ON o.id = CASE WHEN e.source_id=$1 THEN e.target_id ELSE e.source_id END
+		JOIN nodes t ON t.id=o.parent_id AND t.type='topic' AND t.deleted_at IS NULL
+		WHERE (e.source_id=$1 OR e.target_id=$1) AND e.state<>'rejected' AND e.confidence>=0.7 AND o.deleted_at IS NULL
+		ORDER BY e.confidence DESC LIMIT 1`, nodeID).Scan(&topicID)
+	if topicID == "" {
+		_ = a.db.QueryRow(ctx, `SELECT id FROM nodes WHERE workspace_id=$1 AND type='topic' AND deleted_at IS NULL AND lower(title)=lower($2) LIMIT 1`, wsID, topicName).Scan(&topicID)
+	}
 	if topicID == "" {
 		var maxX *float64
 		var n int
@@ -501,16 +633,19 @@ func (p *Pipeline) placeInTopic(ctx context.Context, wsID, nodeID, topicName str
 		}
 		if err := a.db.QueryRow(ctx, `INSERT INTO nodes (workspace_id,branch_id,type,title,body,x,y,width,height,created_via,ai_stage)
 			VALUES ($1,$2,'topic',$3,$4,$5,0,600,320,'ai','ready') RETURNING id`, wsID, branch, topicName, topicColors[n%len(topicColors)], x).Scan(&topicID); err != nil {
-			return
+			return ""
 		}
 		a.publishNode(ctx, "node.created", topicID, nil)
 	}
 	if _, err := a.db.Exec(ctx, `UPDATE nodes SET parent_id=$2, version=version+1, updated_at=now() WHERE id=$1`, nodeID, topicID); err != nil {
-		return
+		return ""
 	}
 	for _, id := range a.packTopic(ctx, topicID) {
 		a.publishNode(ctx, "node.updated", id, nil)
 	}
+	var title string
+	_ = a.db.QueryRow(ctx, `SELECT title FROM nodes WHERE id=$1`, topicID).Scan(&title)
+	return title
 }
 
 // packTopic lays children of a topic in a grid (same constants as frontend/lib/graph/layout.ts packTopic),
@@ -621,9 +756,16 @@ func (p *Pipeline) checkConflicts(ctx context.Context, wsID, nodeID, pageID stri
 			continue
 		}
 		x := pairs[r.Index]
+		// Both pages run this check, so the pair arrives once in each order; one conflict per pair.
+		var dup bool
+		_ = a.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM conflicts WHERE (node_a_id=$1 AND node_b_id=$2) OR (node_a_id=$2 AND node_b_id=$1))`,
+			x.otherNode, nodeID).Scan(&dup)
+		if dup {
+			continue
+		}
 		var addedA, addedB string
-		_ = a.db.QueryRow(ctx, `SELECT coalesce((SELECT CASE WHEN created_via='mcp' THEN 'AI assistant (MCP)' ELSE u.name END FROM nodes n LEFT JOIN users u ON u.id=n.created_by WHERE n.id=$1),'Unknown'),
-			coalesce((SELECT CASE WHEN created_via='mcp' THEN 'AI assistant (MCP)' ELSE u.name END FROM nodes n LEFT JOIN users u ON u.id=n.created_by WHERE n.id=$2),'Unknown')`,
+		_ = a.db.QueryRow(ctx, `SELECT coalesce((SELECT CASE WHEN created_via='mcp' THEN 'AI assistant ('||coalesce(n.client_name,'MCP')||')' ELSE u.name END FROM nodes n LEFT JOIN users u ON u.id=n.created_by WHERE n.id=$1),'Unknown'),
+			coalesce((SELECT CASE WHEN created_via='mcp' THEN 'AI assistant ('||coalesce(n.client_name,'MCP')||')' ELSE u.name END FROM nodes n LEFT JOIN users u ON u.id=n.created_by WHERE n.id=$2),'Unknown')`,
 			x.otherNode, nodeID).Scan(&addedA, &addedB)
 		analysis := gin.H{"topic": r.Topic, "label": r.Label, "confidence": r.Confidence,
 			"claims": []gin.H{
@@ -640,8 +782,11 @@ func (p *Pipeline) checkConflicts(ctx context.Context, wsID, nodeID, pageID stri
 		var branch string
 		_ = a.db.QueryRow(ctx, `SELECT branch_id FROM nodes WHERE id=$1`, nodeID).Scan(&branch)
 		var eid string
+		// Agent 2 may already have drawn a contradicts edge for this pair (either direction); never add a second one.
 		if a.db.QueryRow(ctx, `INSERT INTO edges (workspace_id,branch_id,source_id,target_id,relation,reason,evidence,confidence,origin,state)
-			VALUES ($1,$2,$3,$4,'contradicts',$5,$6,$7,'ai','suggested') ON CONFLICT DO NOTHING RETURNING id`,
+			SELECT $1,$2,$3,$4,'contradicts',$5,$6,$7,'ai','suggested'
+			WHERE NOT EXISTS (SELECT 1 FROM edges WHERE relation='contradicts' AND ((source_id=$3 AND target_id=$4) OR (source_id=$4 AND target_id=$3)))
+			ON CONFLICT DO NOTHING RETURNING id`,
 			wsID, branch, x.otherNode, nodeID, "The sources make claims that seem to disagree: "+r.Topic, mustJSON(nonNil(r.KeyDifferences)), r.Confidence).Scan(&eid) == nil {
 			if e, err := a.loadEdge(ctx, eid); err == nil {
 				a.publish(wsID, "edge.created", nil, e)

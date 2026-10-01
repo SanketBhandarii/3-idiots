@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -192,6 +193,7 @@ func (a *App) capturePage(c *gin.Context) error {
 	if err := bind(c, &b); err != nil {
 		return err
 	}
+	slog.Info("[GO] capture received", "workspace_id", b.WorkspaceID, "domain", domainOf(b.URL), "content_chars", len(b.ContentText), "transition", b.Transition)
 	if b.WorkspaceID == "" {
 		return httpx.BadRequest("workspace_id is required")
 	}
@@ -356,6 +358,11 @@ func (a *App) ingestPage(ctx context.Context, u *User, b capturePageReq, session
 			a.publish(b.WorkspaceID, "session.updated", nil, s)
 		}
 	}
+	sid := ""
+	if session != nil {
+		sid = session.ID
+	}
+	slog.Info("[GO] node created", "workspace_id", b.WorkspaceID, "session_id", sid, "node_id", nodeID, "page_id", pageID, "via", via)
 	a.pipeline.enqueue(nodeID)
 	return gin.H{"node_id": nodeID, "page_id": pageID, "is_new": true}, nil
 }
